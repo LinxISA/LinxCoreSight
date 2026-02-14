@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a problem in LinxCoreSight
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: Include screenshots/logs if useful.
+      placeholder: Describe the behavior and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      placeholder: e.g. 1.0.0 or a commit hash
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      render: shell
+      placeholder: Paste relevant logs here.
+    validations:
+      required: false
+

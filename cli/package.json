@@ -1,0 +1,53 @@
+{
+  "name": "linxcoresight-cli",
+  "version": "1.0.0",
+  "description": "LinxCoreSight CLI - command-line interface for LinxCoreSight IDE",
+  "author": "zhoubot",
+  "license": "BSD-3-Clause",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "linxcoresight": "./dist/index.js",
+    "januscore": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node ./dist/index.js",
+    "dev": "tsc && node ./dist/index.js",
+    "link": "npm run build && npm link",
+    "test": "npm run build && node ./dist/index.js --help"
+  },
+  "keywords": [
+    "linxcoresight",
+    "januscore",
+    "linxisa",
+    "cpu",
+    "fpga",
+    "ide",
+    "cli",
+    "assembler",
+    "compiler",
+    "qemu",
+    "pycircuit"
+  ],
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "commander": "^11.1.0",
+    "inquirer": "^9.2.12"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zhoubot/LinxCoreSight.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zhoubot/LinxCoreSight/issues"
+  },
+  "homepage": "https://github.com/zhoubot/LinxCoreSight#readme"
+}
