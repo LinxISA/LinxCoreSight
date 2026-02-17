@@ -44,11 +44,18 @@ export interface EmulatorResult {
   pid?: number;
 }
 
+export interface ProcessResult {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
   // Dialog operations
-  openFileDialog: (options?: { filters?: { name: string; extensions: string[] }[] }) =>
+  openFileDialog: (options?: { filters?: { name: string; extensions: string[] }[]; defaultPath?: string }) =>
     ipcRenderer.invoke('dialog:openFile', options) as Promise<DialogResult>,
   
   openFolderDialog: () =>
@@ -60,6 +67,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // File system operations
   readFile: (filePath: string) =>
     ipcRenderer.invoke('fs:readFile', filePath) as Promise<{ success: boolean; content?: string; error?: string }>,
+
+  traceReadMeta: (tracePath: string) =>
+    ipcRenderer.invoke('trace:readMeta', tracePath) as Promise<{ ok: boolean; metaPath?: string; metaJson?: string; error?: string }>,
+
+  traceOpenSession: (tracePath: string) =>
+    ipcRenderer.invoke('trace:openSession', tracePath) as Promise<{ ok: boolean; sessionId?: number; sizeBytes?: number; mtimeMs?: number; error?: string }>,
+
+  traceReadChunk: (sessionId: number, offset: number, bytes: number) =>
+    ipcRenderer.invoke('trace:readChunk', sessionId, offset, bytes) as Promise<{ ok: boolean; chunk?: string; nextOffset?: number; eof?: boolean; error?: string }>,
+
+  traceCloseSession: (sessionId: number) =>
+    ipcRenderer.invoke('trace:closeSession', sessionId) as Promise<{ ok: boolean }>,
   
   writeFile: (filePath: string, content: string) =>
     ipcRenderer.invoke('fs:writeFile', filePath, content) as Promise<FSResult>,
@@ -82,9 +101,17 @@ contextBridge.exposeInMainWorld('electronAPI', {
   rename: (oldPath: string, newPath: string) =>
     ipcRenderer.invoke('fs:rename', oldPath, newPath) as Promise<FSResult>,
 
+  // Project scaffolding
+  createProjectFromTemplate: (request: { name: string; location: string; template: string }) =>
+    ipcRenderer.invoke('project:createFromTemplate', request) as Promise<{ success: boolean; projectPath?: string; template?: string; error?: string }>,
+
   // Compiler operations
   compile: (options: { command: string; args: string[]; cwd?: string }) =>
     ipcRenderer.invoke('compiler:compile', options) as Promise<CompileResult>,
+
+  // Generic process runner for command-based build profiles
+  runProcess: (options: { command: string; args: string[]; cwd?: string; env?: Record<string, string>; streamOutput?: boolean; managed?: boolean }) =>
+    ipcRenderer.invoke('process:run', options) as Promise<ProcessResult>,
 
   // Emulator operations
   runEmulator: (options: { command: string; args: string[]; cwd?: string }) =>
@@ -135,6 +162,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
         qemu: string;
         clang: string;
         clangxx: string;
+        lld: string;
         pyCircuit: string;
         linxisa: string;
         workDir: string;
@@ -159,6 +187,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const handler = (_event: any, data: { code: number }) => callback(data);
     ipcRenderer.on('emulator:terminated', handler);
     return () => ipcRenderer.removeListener('emulator:terminated', handler);
+  },
+
+  onProcessOutput: (callback: (data: { type: string; data: string }) => void) => {
+    const handler = (_event: any, data: { type: string; data: string }) => callback(data);
+    ipcRenderer.on('process:output', handler);
+    return () => ipcRenderer.removeListener('process:output', handler);
   },
 
   // Menu event listeners
@@ -239,6 +273,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('menu:toggle-breakpoint', handler);
     return () => ipcRenderer.removeListener('menu:toggle-breakpoint', handler);
   },
+
+  onOpenTrace: (callback: (tracePath: string) => void) => {
+    const handler = (_event: any, tracePath: string) => callback(tracePath);
+    ipcRenderer.on('trace:open', handler);
+    return () => ipcRenderer.removeListener('trace:open', handler);
+  },
   
   onMenuAbout: (callback: () => void) => {
     const handler = () => callback();
@@ -296,7 +336,9 @@ declare global {
       mkdir: (dirPath: string) => Promise<FSResult>;
       delete: (filePath: string) => Promise<FSResult>;
       rename: (oldPath: string, newPath: string) => Promise<FSResult>;
+      createProjectFromTemplate: (request: { name: string; location: string; template: string }) => Promise<{ success: boolean; projectPath?: string; template?: string; error?: string }>;
       compile: (options: { command: string; args: string[]; cwd?: string }) => Promise<CompileResult>;
+      runProcess: (options: { command: string; args: string[]; cwd?: string; env?: Record<string, string>; streamOutput?: boolean; managed?: boolean }) => Promise<ProcessResult>;
       runEmulator: (options: { command: string; args: string[]; cwd?: string }) => Promise<EmulatorResult>;
       stopEmulator: () => Promise<{ success: boolean; error?: string }>;
       getEmulatorStatus: () => Promise<{ running: boolean; pid?: number }>;
@@ -319,6 +361,7 @@ declare global {
       onCompilerOutput: (callback: (data: { type: string; data: string }) => void) => () => void;
       onEmulatorOutput: (callback: (data: { type: string; data: string }) => void) => () => void;
       onEmulatorTerminated: (callback: (data: { code: number }) => void) => () => void;
+      onProcessOutput: (callback: (data: { type: string; data: string }) => void) => () => void;
       onMenuNewFile: (callback: () => void) => () => void;
       onMenuOpenFile: (callback: () => void) => () => void;
       onMenuOpenFolder: (callback: () => void) => () => void;

@@ -16,9 +16,6 @@ export function CodeEditor() {
     updateTabContent,
     setCursorPosition,
     settings,
-    buildProject,
-    runInEmulator,
-    stopExecution,
   } = useIDEStore();
 
   const editorRef = useRef<any>(null);
@@ -27,35 +24,6 @@ export function CodeEditor() {
   const [replaceText, setReplaceText] = useState('');
   const [useRegex, setUseRegex] = useState(false);
   const [matchCase, setMatchCase] = useState(false);
-
-  // Keyboard shortcuts for build/run
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl/Cmd + B: Build
-      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
-        e.preventDefault();
-        buildProject();
-      }
-      // F5: Run
-      if (e.key === 'F5') {
-        e.preventDefault();
-        runInEmulator();
-      }
-      // Shift + F5: Stop
-      if (e.shiftKey && e.key === 'F5') {
-        e.preventDefault();
-        stopExecution();
-      }
-      // Ctrl/Cmd + Shift + B: Build and Run
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'B') {
-        e.preventDefault();
-        buildProject().then(() => runInEmulator());
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [buildProject, runInEmulator, stopExecution]);
 
   const activeTab = tabs.find(t => t.id === activeTabId);
 

@@ -97,6 +97,7 @@ export function Toolbar({
   const { 
     tabs, 
     activeTabId, 
+    currentProject,
     compileStatus,
     emulatorStatus,
     binaryPath
@@ -171,7 +172,7 @@ export function Toolbar({
       {/* Build operations */}
       <ToolbarButton 
         onClick={onCompile} 
-        disabled={!activeTab || isCompiling || isRunning}
+        disabled={(!activeTab && !currentProject) || isCompiling || isRunning}
         variant="compile"
         tooltip="Compile (Ctrl+B)"
       >

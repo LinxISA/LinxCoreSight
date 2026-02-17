@@ -1,43 +1,60 @@
 # LinxCoreSight CLI
 
-Command-line interface for LinxCoreSight.
+Command-line interface for LinxCoreSight project scaffolding, diagnostics, and developer workflows.
 
-This CLI is intended for:
-
-- scaffolding simple LinxISA projects
-- running basic build/run workflows
-- launching IDE-centric actions from the terminal
-
-## Install (local development)
+## Install (Local)
 
 ```bash
-cd LinxCoreSight/cli
+cd /Users/zhoubot/LinxCoreSight/cli
 npm install
 npm run build
 node ./dist/index.js --help
 ```
 
-## Binary name
+## Binary Names
 
 - Primary: `linxcoresight`
-- Legacy alias: `januscore` (kept for compatibility)
+- Legacy alias: `januscore`
 
-## Project config file
+## Project Config Files
 
 - Primary: `linxcoresight.json`
-- Legacy: `januscore.json` (accepted when opening an existing project)
+- Legacy compatibility: `januscore.json`
 
-## Commands (v1)
+## Project Templates
 
-The CLI provides these top-level groups:
+```bash
+linxcoresight project create myproj -t empty
+linxcoresight project create coremark-demo -t coremark
+linxcoresight project create dhrystone-demo -t dhrystone
+linxcoresight project create drystone-demo -t drystone   # alias -> dhrystone
+```
 
-- `project` (create/open/list)
-- `build` (build/clean/rebuild)
-- `run` (run/debug/simulate)
-- `visualize` (schematic/pipeview/trace/waveform)
-- `file` (new/open/list)
-- `config` (get/set/list)
-- `agent` (basic automation hooks)
-- `doctor` / `version` / `help`
+Prepared benchmark templates copy:
 
-Some subcommands are placeholders in v1 and may print simulated output while the IDE integration is refined.
+- template scaffold from `/Users/zhoubot/LinxCoreSight/templates/prepared/...`
+- benchmark sources from `/Users/zhoubot/LinxCoreSight/third_party/benchmarks/...`
+
+## Doctor
+
+`doctor` now performs real checks for local toolchain binaries and versions.
+
+```bash
+linxcoresight doctor
+linxcoresight doctor --smoke
+```
+
+Checks include:
+
+- `clang`
+- `clang++`
+- `ld.lld`
+- `qemu-system-linx64`
+- `pyc-compile`
+- `linx-isa` root
+
+`--smoke` additionally runs a small compile + QEMU startup probe.
+
+## Notes
+
+Some command groups are still placeholder-oriented while IDE integration is refined, but project templating and diagnostics are functional.

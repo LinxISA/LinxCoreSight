@@ -1,97 +1,70 @@
 # LinxCoreSight
 
-LinxCoreSight is a desktop IDE for LinxISA development with QEMU emulation, pyCircuit simulation, and hardware visualization.
+LinxCoreSight is a renderer-only desktop viewer for **LinxTrace v1**.
 
-## Features
+## Scope
 
-- **Code Editor**: Monaco-based editor with LinxISA syntax highlighting and IntelliSense
-- **Compiler Integration**: One-click compilation with Linx Compiler
-- **QEMU Emulation**: Run and debug your code using QEMU for LinxISA
-- **Pipeline Visualization**: Interactive pipeview showing instruction pipeline stages
-- **Execution Trace**: Detailed trace view with register state
-- **Wakeup Chains**: Visualize instruction dependencies and wakeup chains
-- **Hierarchical Schematics**: Interactive circuit schematic viewer for Linx core designs
-- **Serial Monitor**: Connect to hardware via serial port
+- Opens `*.linxtrace.jsonl` with required sidecar `*.linxtrace.meta.json`.
+- Renders pipeline occupancy strictly from explicit `OCC` events.
+- Performs strict schema/contract checks before drawing.
+- Fails fast on malformed traces (no silent blank pipeline pane).
+- Supports multi-file tabbed viewing (lazy active-tab loading).
+- Uses streaming trace sessions for large traces with viewport-based rendering.
+- Includes Konata-style interaction controls (zoom-anchor, drag-pan, keyboard navigation, hover details).
 
-## Installation
+## Trace Contract
+
+- Format: `linxtrace.v1`
+- Event stream: JSONL (`OP_DEF`, `LABEL`, `OCC`, `RETIRE`, `BLOCK_EVT`, `XCHECK`)
+- Sidecar metadata: stage/lane/row catalogs + `contract_id`
+
+## Run
 
 ```bash
-# Install dependencies
+cd /Users/zhoubot/LinxCoreSight
 npm install
-
-# Run in development mode
 npm run dev
-
-# Build for production
-npm run build
 ```
 
-## Technology Stack
-
-- **Frontend**: React 18 + TypeScript + Vite
-- **State Management**: Zustand
-- **Code Editor**: Monaco Editor
-- **Visualization**: D3.js, Cytoscape.js
-- **Backend**: Electron
-- **Styling**: TailwindCSS
-
-## Project Structure
-
-```
-LinxCoreSight/
-├── electron/           # Electron main process
-│   ├── main.ts       # Main process entry
-│   └── preload.ts   # Preload script
-├── src/
-│   ├── components/   # React components
-│   │   ├── Editor/  # Code editor
-│   │   ├── Layout/  # Layout components
-│   │   ├── Panels/  # Visualization panels
-│   │   ├── Toolbar/ # Toolbar
-│   │   └── Monitor/ # Serial monitor
-│   ├── store/       # Zustand stores
-│   ├── styles/      # Global styles
-│   └── types/       # TypeScript types
-├── package.json
-├── vite.config.ts
-└── tailwind.config.js
-```
-
-## Keyboard Shortcuts
-
-| Action | Shortcut |
-|--------|----------|
-| New File | Ctrl+N |
-| Open File | Ctrl+O |
-| Save | Ctrl+S |
-| Compile | F5 |
-| Run | F6 |
-| Debug | F7 |
-| Stop | Shift+F5 |
-
-## Color Theme
-
-The IDE features a dark theme inspired by Turing Complete game with a circuit/tech aesthetic:
-
-- **Background**: Deep navy black (#0a0e14)
-- **Accent Cyan**: Active elements (#00d9ff)
-- **Accent Green**: Success/connected (#00ff88)
-- **Accent Orange**: Warnings/run (#ff6b35)
-- **Accent Purple**: Branches/special (#a855f7)
-
-## Development
+## Build
 
 ```bash
-# Start development server
-npm run dev
-
-# Build for production
+cd /Users/zhoubot/LinxCoreSight
 npm run build
-
-# Package as application
-npm run build:vite
 ```
 
-## License
+## Open from LinxCore
 
-BSD-3-Clause
+```bash
+bash /Users/zhoubot/LinxCore/tools/linxcoresight/run_linxtrace.sh <program.memh> [max_commits]
+bash /Users/zhoubot/LinxCore/tools/linxcoresight/open_linxcoresight.sh <trace.linxtrace.jsonl>
+```
+
+## CLI Diagnostics
+
+```bash
+cd /Users/zhoubot/LinxCoreSight
+node scripts/linxtrace_cli.js lint /path/to/trace.linxtrace.jsonl
+node scripts/linxtrace_cli.js stats /path/to/trace.linxtrace.jsonl
+node scripts/linxtrace_cli.js schema-check /path/to/trace.linxtrace.jsonl
+node scripts/linxtrace_cli.js first-failure /path/to/trace.linxtrace.jsonl
+node scripts/linxtrace_cli.js render-check /path/to/trace.linxtrace.jsonl
+node scripts/trace_lint.js /path/to/trace.linxtrace.jsonl
+node scripts/trace_perf_check.js /path/to/trace.linxtrace.jsonl --max-ms 5000
+```
+
+`render-check` is a renderer diagnostics command; it flags issues like legacy canvas-height overflow risk and lifecycle anomalies.
+
+## UI/Perf Docs
+
+- Shortcuts: `/Users/zhoubot/LinxCoreSight/docs/ui/shortcuts.md`
+- Large trace targets: `/Users/zhoubot/LinxCoreSight/docs/perf/large_trace_targets.md`
+- Debug workflow: `/Users/zhoubot/LinxCoreSight/docs/trace/linxcoresight_debug_workflow.md`
+
+## Skills
+
+Canonical skill for this IDE:
+- `/Users/zhoubot/.codex/skills/linxcoresight-ide/SKILL.md`
+
+Backward-compatible alias:
+- `/Users/zhoubot/.codex/skills/linx-konata-pipeview/SKILL.md`

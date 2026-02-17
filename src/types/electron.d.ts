@@ -42,11 +42,19 @@ export interface EmulatorResult {
   pid?: number;
 }
 
+export interface ProcessResult {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
 export interface ToolchainInfo {
   tools: {
     qemu: string;
     clang: string;
     clangxx: string;
+    lld: string;
     pyCircuit: string;
     linxisa: string;
     workDir: string;
@@ -56,12 +64,16 @@ export interface ToolchainInfo {
 
 export interface ElectronAPI {
   // Dialogs
-  openFileDialog: (options?: { filters?: { name: string; extensions: string[] }[] }) => Promise<DialogResult>;
+  openFileDialog: (options?: { filters?: { name: string; extensions: string[] }[]; defaultPath?: string }) => Promise<DialogResult>;
   openFolderDialog: () => Promise<DialogResult>;
   saveFileDialog: (options?: { filters?: { name: string; extensions: string[] }[]; defaultPath?: string }) => Promise<SaveDialogResult>;
 
   // File System
   readFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
+  traceReadMeta: (tracePath: string) => Promise<{ ok: boolean; metaPath?: string; metaJson?: string; error?: string }>;
+  traceOpenSession: (tracePath: string) => Promise<{ ok: boolean; sessionId?: number; sizeBytes?: number; mtimeMs?: number; error?: string }>;
+  traceReadChunk: (sessionId: number, offset: number, bytes: number) => Promise<{ ok: boolean; chunk?: string; nextOffset?: number; eof?: boolean; error?: string }>;
+  traceCloseSession: (sessionId: number) => Promise<{ ok: boolean }>;
   writeFile: (filePath: string, content: string) => Promise<FSResult>;
   readDir: (dirPath: string) => Promise<{ success: boolean; files?: FileEntry[]; error?: string }>;
   stat: (filePath: string) => Promise<{ success: boolean; stats?: FileStats; error?: string }>;
@@ -69,10 +81,12 @@ export interface ElectronAPI {
   mkdir: (dirPath: string) => Promise<FSResult>;
   delete: (filePath: string) => Promise<FSResult>;
   rename: (oldPath: string, newPath: string) => Promise<FSResult>;
+  createProjectFromTemplate: (request: { name: string; location: string; template: string }) => Promise<{ success: boolean; projectPath?: string; template?: string; error?: string }>;
 
   // Compiler
   compile: (options: { command: string; args: string[]; cwd?: string }) => Promise<CompileResult>;
   onCompilerOutput: (callback: (data: { type: string; data: string }) => void) => () => void;
+  runProcess: (options: { command: string; args: string[]; cwd?: string; env?: Record<string, string>; streamOutput?: boolean; managed?: boolean }) => Promise<ProcessResult>;
 
   // Emulator
   runEmulator: (options: { command: string; args: string[]; cwd?: string }) => Promise<EmulatorResult>;
@@ -80,6 +94,7 @@ export interface ElectronAPI {
   getEmulatorStatus: () => Promise<{ running: boolean; pid?: number }>;
   onEmulatorOutput: (callback: (data: { type: string; data: string }) => void) => () => void;
   onEmulatorTerminated: (callback: (data: { code: number }) => void) => () => void;
+  onProcessOutput: (callback: (data: { type: string; data: string }) => void) => () => void;
 
   // Serial monitor
   connectMonitor: (options: { port: string; baudRate: number }) => Promise<{ success: boolean; message?: string; error?: string }>;
@@ -111,6 +126,7 @@ export interface ElectronAPI {
   onMenuStepOut: (callback: () => void) => () => void;
   onMenuToggleBreakpoint: (callback: () => void) => () => void;
   onMenuAbout: (callback: () => void) => () => void;
+  onOpenTrace?: (callback: (tracePath: string) => void) => () => void;
 
   // Debugger
   debuggerConnect: (options: { port: number; binary?: string }) => Promise<{ success: boolean; message?: string; error?: string }>;

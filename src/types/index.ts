@@ -12,6 +12,7 @@ export interface Project {
   createdAt: Date;
   modifiedAt: Date;
   settings: ProjectSettings;
+  buildProfile?: ProjectBuildProfile;
 }
 
 export interface ProjectSettings {
@@ -21,6 +22,59 @@ export interface ProjectSettings {
   includePaths: string[];
   defines: Record<string, string>;
   linkerScript?: string;
+}
+
+export interface ProjectBuildCommand {
+  command: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+}
+
+export interface ProjectBuildProfile {
+  kind: 'single_file' | 'command';
+  build?: ProjectBuildCommand;
+  run?: ProjectBuildCommand;
+  successChecks?: {
+    // Backward-compatible default checks when build/run-specific checks are absent.
+    contains?: string[];
+    notContains?: string[];
+  };
+  buildSuccessChecks?: {
+    contains?: string[];
+    notContains?: string[];
+  };
+  runSuccessChecks?: {
+    contains?: string[];
+    notContains?: string[];
+  };
+}
+
+export interface ProjectArtifacts {
+  elf?: string;
+  bin?: string;
+  objdump?: string;
+  pipeview?: string;
+  qemuLog?: string;
+  qemuTrace?: string;
+}
+
+export interface ProjectConfigFile {
+  name?: string;
+  template?: string;
+  createdAt?: string;
+  buildProfile?: ProjectBuildProfile;
+  artifacts?: ProjectArtifacts;
+}
+
+export interface PreparedProjectSpec {
+  id: string;
+  title: string;
+  description: string;
+  templateId: string;
+  benchmarkId: 'coremark' | 'dhrystone';
+  difficulty: 'intro' | 'intermediate' | 'advanced';
+  tags: string[];
 }
 
 // ============================================
@@ -224,12 +278,14 @@ export const defaultSettings: AppSettings = {
   showMinimap: true,
   autoSave: false,
   autoCompile: true,
-  compilerPath: 'clang',
-  clangxxPath: 'clang++',
-  lldPath: 'ld.lld',
-  qemuPath: 'qemu-system-linx64',
+  compilerPath: '',
+  clangxxPath: '',
+  lldPath: '',
+  qemuPath: '',
   qemuArgs: [
+    '-machine', 'virt',
     '-nographic',
+    '-monitor', 'none',
     '-m', '512M'
   ],
   workspacePath: '',

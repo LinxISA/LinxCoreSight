@@ -43,13 +43,24 @@ export interface EmulatorResult {
   pid?: number;
 }
 
+export interface ProcessResult {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
 declare global {
   interface Window {
     electronAPI: {
-      openFileDialog: (options?: { filters?: { name: string; extensions: string[] }[] }) => Promise<DialogResult>;
+      openFileDialog: (options?: { filters?: { name: string; extensions: string[] }[]; defaultPath?: string }) => Promise<DialogResult>;
       openFolderDialog: () => Promise<DialogResult>;
       saveFileDialog: (options?: { filters?: { name: string; extensions: string[] }[]; defaultPath?: string }) => Promise<SaveDialogResult>;
       readFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
+      traceReadMeta: (tracePath: string) => Promise<{ ok: boolean; metaPath?: string; metaJson?: string; error?: string }>;
+      traceOpenSession: (tracePath: string) => Promise<{ ok: boolean; sessionId?: number; sizeBytes?: number; mtimeMs?: number; error?: string }>;
+      traceReadChunk: (sessionId: number, offset: number, bytes: number) => Promise<{ ok: boolean; chunk?: string; nextOffset?: number; eof?: boolean; error?: string }>;
+      traceCloseSession: (sessionId: number) => Promise<{ ok: boolean }>;
       writeFile: (filePath: string, content: string) => Promise<FSResult>;
       readDir: (dirPath: string) => Promise<{ success: boolean; files?: FileEntry[]; error?: string }>;
       stat: (filePath: string) => Promise<{ success: boolean; stats?: FileStats; error?: string }>;
@@ -57,7 +68,9 @@ declare global {
       mkdir: (dirPath: string) => Promise<FSResult>;
       delete: (filePath: string) => Promise<FSResult>;
       rename: (oldPath: string, newPath: string) => Promise<FSResult>;
+      createProjectFromTemplate: (request: { name: string; location: string; template: string }) => Promise<{ success: boolean; projectPath?: string; template?: string; error?: string }>;
       compile: (options: { command: string; args: string[]; cwd?: string }) => Promise<CompileResult>;
+      runProcess: (options: { command: string; args: string[]; cwd?: string; env?: Record<string, string>; streamOutput?: boolean; managed?: boolean }) => Promise<ProcessResult>;
       runEmulator: (options: { command: string; args: string[]; cwd?: string }) => Promise<EmulatorResult>;
       stopEmulator: () => Promise<{ success: boolean; error?: string }>;
       getEmulatorStatus: () => Promise<{ running: boolean; pid?: number }>;
@@ -69,9 +82,22 @@ declare global {
       onMonitorError: (callback: (error: string) => void) => () => void;
       getPath: (name: string) => Promise<string>;
       getVersion: () => Promise<string>;
+      getToolchainInfo: () => Promise<{
+        tools: {
+          qemu: string;
+          clang: string;
+          clangxx: string;
+          lld: string;
+          pyCircuit: string;
+          linxisa: string;
+          workDir: string;
+        };
+        results: Record<string, boolean>;
+      }>;
       onCompilerOutput: (callback: (data: { type: string; data: string }) => void) => () => void;
       onEmulatorOutput: (callback: (data: { type: string; data: string }) => void) => () => void;
       onEmulatorTerminated: (callback: (data: { code: number }) => void) => () => void;
+      onProcessOutput: (callback: (data: { type: string; data: string }) => void) => () => void;
       onMenuNewFile: (callback: () => void) => () => void;
       onMenuOpenFile: (callback: () => void) => () => void;
       onMenuOpenFolder: (callback: () => void) => () => void;
@@ -82,6 +108,7 @@ declare global {
       onMenuDebug: (callback: () => void) => () => void;
       onMenuStop: (callback: () => void) => () => void;
       onMenuAbout: (callback: () => void) => () => void;
+      onOpenTrace?: (callback: (tracePath: string) => void) => () => void;
     };
   }
 }

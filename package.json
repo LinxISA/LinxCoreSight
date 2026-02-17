@@ -10,7 +10,15 @@
     "preview": "vite preview",
     "electron:dev": "vite build && electron .",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck"
+    "test": "npm run typecheck",
+    "linxtrace:lint": "node scripts/linxtrace_cli.js lint",
+    "linxtrace:stats": "node scripts/linxtrace_cli.js stats",
+    "linxtrace:schema-check": "node scripts/linxtrace_cli.js schema-check",
+    "linxtrace:first-failure": "node scripts/linxtrace_cli.js first-failure",
+    "linxtrace:render-check": "node scripts/linxtrace_cli.js render-check",
+    "trace:lint": "node scripts/trace_lint.js",
+    "trace:perf": "node scripts/trace_perf_check.js",
+    "trace:smoke-tabs": "node scripts/trace_smoke_tabs.js"
   },
   "author": "zhoubot",
   "license": "BSD-3-Clause",
@@ -65,7 +73,10 @@
     },
     "files": [
       "dist/**/*",
-      "dist-electron/**/*"
+      "dist-electron/**/*",
+      "templates/**/*",
+      "third_party/**/*",
+      "THIRD_PARTY_NOTICES.md"
     ],
     "extraResources": [
       {

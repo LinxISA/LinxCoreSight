@@ -41,6 +41,47 @@ export function AssemblyPanel() {
     setError(null);
 
     try {
+      const resolveProjectPath = (target?: string): string | null => {
+        if (!target) return null;
+        if (target.startsWith('/')) return target;
+        return `${currentProject.path.replace(/\/+$/, '')}/${target.replace(/\\/g, '/').replace(/^\.\//, '')}`;
+      };
+
+      // Prefer generated objdump artifact if present.
+      const configResult = await window.electronAPI.readFile(`${currentProject.path}/linxcoresight.json`);
+      if (configResult.success && configResult.content) {
+        try {
+          const config = JSON.parse(configResult.content) as { artifacts?: { objdump?: string } };
+          const configuredObjdumpPath = resolveProjectPath(config.artifacts?.objdump);
+          if (configuredObjdumpPath && await window.electronAPI.exists(configuredObjdumpPath)) {
+            const objdumpText = await window.electronAPI.readFile(configuredObjdumpPath);
+            if (objdumpText.success && objdumpText.content) {
+              setAssembly(objdumpText.content);
+              parseAssemblyFunctions(objdumpText.content);
+              return;
+            }
+          }
+        } catch (_error) {
+          // Ignore malformed config and continue with fallback logic.
+        }
+      }
+
+      const sidecarCandidates = [
+        `${binaryPath}.objdump.txt`,
+        binaryPath.endsWith('.elf') ? binaryPath.replace(/\.elf$/, '.objdump.txt') : '',
+      ].filter(Boolean);
+
+      for (const sidecarPath of sidecarCandidates) {
+        if (await window.electronAPI.exists(sidecarPath)) {
+          const sidecar = await window.electronAPI.readFile(sidecarPath);
+          if (sidecar.success && sidecar.content) {
+            setAssembly(sidecar.content);
+            parseAssemblyFunctions(sidecar.content);
+            return;
+          }
+        }
+      }
+
       // Use llvm-objdump to disassemble the binary
       const compilerC = store.settings.compilerPath || 'clang';
       const compilerDir = compilerC.includes('/') ? compilerC.slice(0, compilerC.lastIndexOf('/')) : '';
@@ -102,7 +143,7 @@ export function AssemblyPanel() {
 
     for (const line of lines) {
       // Match function labels (e.g., "<_start>:" or "<main>:")
-      const funcMatch = line.match(/^<(.+)>:$/);
+      const funcMatch = line.match(/^\s*(?:[0-9a-fA-F]+)?\s*<([^>]+)>:$/);
       if (funcMatch) {
         if (currentFunc) {
           funcs.push(currentFunc);
@@ -116,7 +157,7 @@ export function AssemblyPanel() {
       }
 
       // Match instruction lines (e.g., "   0:   00 00 00 00    addi    a0, a0, 0")
-      const instMatch = line.match(/^\s*([0-9a-f]+):\s+([0-9a-f ]+)\s+(\w+)\s+(.*)$/);
+      const instMatch = line.match(/^\s*([0-9a-fA-F]+):\s+([0-9a-fA-F ]+)\s+([.\w]+)\s*(.*)$/);
       if (instMatch && currentFunc) {
         currentFunc.instructions.push({
           address: parseInt(instMatch[1], 16),

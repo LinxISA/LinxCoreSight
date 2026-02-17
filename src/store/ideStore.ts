@@ -49,6 +49,30 @@ const loadBackend = async () => {
 
 const generateId = () => Math.random().toString(36).substring(2, 11);
 
+const sanitizeDisplayString = (value: string, fallback: string, maxLen: number): string => {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+  const strippedControls = value.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  if (!strippedControls) {
+    return fallback;
+  }
+  if (strippedControls.length > maxLen) {
+    return fallback;
+  }
+  const nonAsciiCount = (strippedControls.match(/[^\x20-\x7e]/g) || []).length;
+  if (strippedControls.length >= 32 && nonAsciiCount / strippedControls.length > 0.35) {
+    return fallback;
+  }
+  return strippedControls;
+};
+
+const sanitizeProjectName = (name: string): string =>
+  sanitizeDisplayString(name, 'Project', 80);
+
+const sanitizeProjectPath = (path: string): string =>
+  sanitizeDisplayString(path, '', 512);
+
 const getLanguageFromPath = (filePath: string): string => {
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
   const languageMap: Record<string, string> = {
@@ -147,8 +171,8 @@ interface IDEState {
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string) => void;
   updateTabContent: (tabId: string, content: string) => void;
-  saveTab: (tabId: string) => void;
-  saveAllTabs: () => void;
+  saveTab: (tabId: string) => Promise<void>;
+  saveAllTabs: () => Promise<void>;
   setCursorPosition: (line: number, column: number) => void;
   createNewFile: (name?: string, language?: string) => void;
   createNewFolder: (name: string) => void;
@@ -308,10 +332,12 @@ export const useIDEStore = create<IDEState>((set, get) => ({
   // ========================
   
   createProject: (name: string, path: string, template = 'empty') => {
+    const safeName = sanitizeProjectName(name);
+    const safePath = sanitizeProjectPath(path);
     const project: Project = {
       id: generateId(),
-      name,
-      path,
+      name: safeName,
+      path: safePath || path,
       description: `LinxCoreSight Project - ${template} template`,
       createdAt: new Date(),
       modifiedAt: new Date(),
@@ -327,25 +353,27 @@ export const useIDEStore = create<IDEState>((set, get) => ({
     set({ 
       currentProject: project,
       isWelcomeScreen: false,
-      rootPath: path,
+      rootPath: safePath || path,
       files: [
-        { name: 'src', isDirectory: true, path: `${path}/src`, expanded: true, children: [
-          { name: 'main.li', isDirectory: false, path: `${path}/src/main.li` }
+        { name: 'src', isDirectory: true, path: `${safePath || path}/src`, expanded: true, children: [
+          { name: 'main.li', isDirectory: false, path: `${safePath || path}/src/main.li` }
         ]},
-        { name: 'include', isDirectory: true, path: `${path}/include`, expanded: false, children: [] },
-        { name: 'build', isDirectory: true, path: `${path}/build`, expanded: false, children: [] },
-        { name: 'linxcoresight.json', isDirectory: false, path: `${path}/linxcoresight.json` }
+        { name: 'include', isDirectory: true, path: `${safePath || path}/include`, expanded: false, children: [] },
+        { name: 'build', isDirectory: true, path: `${safePath || path}/build`, expanded: false, children: [] },
+        { name: 'linxcoresight.json', isDirectory: false, path: `${safePath || path}/linxcoresight.json` }
       ]
     });
     
     // Add to recent projects
     const { recentProjects } = get();
-    set({ recentProjects: [project, ...recentProjects.filter(p => p.path !== path)].slice(0, 10) });
+    const projectPathKey = safePath || path;
+    set({ recentProjects: [project, ...recentProjects.filter(p => p.path !== projectPathKey)].slice(0, 10) });
     
     return project;
   },
   
   openProject: async (path: string) => {
+    const safePath = sanitizeProjectPath(path) || path;
     // Read directory structure from disk
     const buildTree = async (dirPath: string): Promise<FileEntry[]> => {
       try {
@@ -383,12 +411,12 @@ export const useIDEStore = create<IDEState>((set, get) => ({
       }
     };
     
-    const files = await buildTree(path);
+    const files = await buildTree(safePath);
     
     const project: Project = {
       id: generateId(),
-      name: path.split('/').pop() || 'Project',
-      path,
+      name: sanitizeProjectName(safePath.split('/').pop() || safePath.split('\\').pop() || 'Project'),
+      path: safePath,
       createdAt: new Date(),
       modifiedAt: new Date(),
       settings: {
@@ -403,13 +431,13 @@ export const useIDEStore = create<IDEState>((set, get) => ({
     set({ 
       currentProject: project,
       isWelcomeScreen: false,
-      rootPath: path,
+      rootPath: safePath,
       files
     });
     
     // Add to recent projects
     const { recentProjects } = get();
-    set({ recentProjects: [project, ...recentProjects.filter(p => p.path !== path)].slice(0, 10) });
+    set({ recentProjects: [project, ...recentProjects.filter(p => p.path !== safePath)].slice(0, 10) });
   },
   
   closeProject: () => {
@@ -425,8 +453,13 @@ export const useIDEStore = create<IDEState>((set, get) => ({
   
   addRecentProject: (project: Project) => {
     const { recentProjects } = get();
+    const sanitizedProject: Project = {
+      ...project,
+      name: sanitizeProjectName(project.name || 'Project'),
+      path: sanitizeProjectPath(project.path) || project.path,
+    };
     set({ 
-      recentProjects: [project, ...recentProjects.filter(p => p.path !== project.path)].slice(0, 10) 
+      recentProjects: [sanitizedProject, ...recentProjects.filter(p => p.path !== sanitizedProject.path)].slice(0, 10) 
     });
   },
   
@@ -685,24 +718,33 @@ export const useIDEStore = create<IDEState>((set, get) => ({
     const { tabs } = get();
     const tab = tabs.find(t => t.id === tabId);
     if (!tab || !tab.isDirty) return;
-    
-    // In real implementation, would use electron API
-    set({
-      tabs: tabs.map(t => 
-        t.id === tabId 
-          ? { ...t, originalContent: t.content, isDirty: false }
-          : t
-      )
-    });
+
+    try {
+      const result = await window.electronAPI.writeFile(tab.filePath, tab.content);
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to save file');
+      }
+      set({
+        tabs: tabs.map(t =>
+          t.id === tabId
+            ? { ...t, originalContent: t.content, isDirty: false }
+            : t
+        )
+      });
+    } catch (error) {
+      console.error('Error saving tab:', error);
+    }
   },
   
-  saveAllTabs: () => {
+  saveAllTabs: async () => {
     const { tabs } = get();
+    const pending: Promise<void>[] = [];
     tabs.forEach(tab => {
       if (tab.isDirty) {
-        get().saveTab(tab.id);
+        pending.push(get().saveTab(tab.id));
       }
     });
+    await Promise.all(pending);
   },
   
   setCursorPosition: (line, column) => set({ cursorPosition: { line, column } }),

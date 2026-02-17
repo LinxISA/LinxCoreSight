@@ -28,8 +28,22 @@ process.on('unhandledRejection', (reason) => {
 });
 
 let mainWindow: BrowserWindow | null = null;
+let mainWindowReady = false;
 let qemuProcess: ChildProcess | null = null;
+let managedRunProcess: ChildProcess | null = null;
 let serialPort: any = null;
+let pendingTraceOpenPath: string | null = null;
+
+type TraceFileSession = {
+  sessionId: number;
+  tracePath: string;
+  fd: number;
+  sizeBytes: number;
+  mtimeMs: number;
+};
+
+const traceSessions = new Map<number, TraceFileSession>();
+let traceSessionCounter = 1;
 
 // Force production mode for now - check if we're in packaged app
 const isProd = app.isPackaged;
@@ -50,30 +64,86 @@ app.on('responsive', () => {
   log.info('Window became responsive again');
 });
 
+function resolveFirstExisting(candidates: string[]): string {
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0] || '';
+}
+
+function isExecutable(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath, fs.constants.X_OK);
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function terminateChildProcess(proc: ChildProcess | null, label: string): boolean {
+  if (!proc) {
+    return false;
+  }
+
+  try {
+    const pid = proc.pid;
+    if (pid && process.platform !== 'win32') {
+      process.kill(-pid, 'SIGTERM');
+    } else {
+      proc.kill('SIGTERM');
+    }
+    log.info(`Terminated ${label}`, { pid: proc.pid });
+    return true;
+  } catch (error) {
+    log.warn(`Failed to terminate ${label} gracefully`, error);
+    try {
+      proc.kill('SIGKILL');
+      return true;
+    } catch (_killError) {
+      return false;
+    }
+  }
+}
+
 // Toolchain paths - detect and configure automatically
 function getToolchainPaths() {
   const homeDir = process.env.HOME || process.env.USERPROFILE || '';
   const appDir = app.isPackaged 
     ? path.join(process.resourcesPath, 'toolchains')
     : path.join(__dirname, '..', 'toolchains');
-  
-  // Helper to resolve path - try bundled first, then fall back to home dir
-  const resolvePath = (bundledRelativePath: string, fallbackPath: string) => {
-    const bundledPath = path.join(appDir, bundledRelativePath);
-    if (fs.existsSync(bundledPath)) {
-      return bundledPath;
-    }
-    return fallbackPath;
-  };
-  
-  // Default paths - first try bundled, then user's home directory
+
+  const bundledQemuCandidates = [
+    path.join(appDir, 'qemu', 'build-linx', 'qemu-system-linx64'),
+    path.join(appDir, 'qemu', 'build', 'qemu-system-linx64'),
+    path.join(appDir, 'qemu', 'build-tci', 'qemu-system-linx64'),
+  ];
+  const localQemuCandidates = [
+    path.join(homeDir, 'qemu', 'build-linx', 'qemu-system-linx64'),
+    path.join(homeDir, 'qemu', 'build', 'qemu-system-linx64'),
+    path.join(homeDir, 'qemu', 'build-tci', 'qemu-system-linx64'),
+  ];
+  const bundledLlvmBin = path.join(appDir, 'llvm-project', 'build-linxisa-clang', 'bin');
+  const localLlvmBin = path.join(homeDir, 'llvm-project', 'build-linxisa-clang', 'bin');
+  const llvmBin = resolveFirstExisting([bundledLlvmBin, localLlvmBin]);
+  const linxisaRoot = resolveFirstExisting([
+    path.join(appDir, 'linx-isa'),
+    path.join(appDir, 'linxisa'),
+    path.join(homeDir, 'linx-isa'),
+    path.join(homeDir, 'linxisa'),
+  ]);
+
   return {
-    qemu: resolvePath('qemu/build-linx/qemu-system-linx64', path.join(homeDir, 'qemu', 'build-linx', 'qemu-system-linx64')),
-    clang: resolvePath('llvm-project/build-linxisa-clang/bin/clang', path.join(homeDir, 'llvm-project', 'build-linxisa-clang', 'bin', 'clang')),
-    clangxx: resolvePath('llvm-project/build-linxisa-clang/bin/clang++', path.join(homeDir, 'llvm-project', 'build-linxisa-clang', 'bin', 'clang++')),
-    lld: resolvePath('llvm-project/build-linxisa-clang/bin/ld.lld', path.join(homeDir, 'llvm-project', 'build-linxisa-clang', 'bin', 'ld.lld')),
-    pyCircuit: resolvePath('pyCircuit', path.join(homeDir, 'pyCircuit')),
-    linxisa: resolvePath('linxisa', path.join(homeDir, 'linxisa')),
+    qemu: resolveFirstExisting([...bundledQemuCandidates, ...localQemuCandidates]),
+    clang: path.join(llvmBin, 'clang'),
+    clangxx: path.join(llvmBin, 'clang++'),
+    lld: path.join(llvmBin, 'ld.lld'),
+    pyCircuit: resolveFirstExisting([
+      path.join(appDir, 'pyCircuit'),
+      path.join(homeDir, 'pyCircuit'),
+    ]),
+    linxisa: linxisaRoot,
     workDir: path.join(homeDir, 'LinxCoreSight', 'workspace')
   };
 }
@@ -84,8 +154,10 @@ function checkToolchain() {
   const results: Record<string, boolean> = {};
   
   try {
-    results.qemu = fs.existsSync(tools.qemu);
-    results.clang = fs.existsSync(tools.clang);
+    results.qemu = fs.existsSync(tools.qemu) && isExecutable(tools.qemu);
+    results.clang = fs.existsSync(tools.clang) && isExecutable(tools.clang);
+    results.clangxx = fs.existsSync(tools.clangxx) && isExecutable(tools.clangxx);
+    results.lld = fs.existsSync(tools.lld) && isExecutable(tools.lld);
     results.pyCircuit = fs.existsSync(tools.pyCircuit);
     results.linxisa = fs.existsSync(tools.linxisa);
   } catch (e) {
@@ -94,6 +166,30 @@ function checkToolchain() {
   
   log.info('Toolchain status:', results);
   return { tools, results };
+}
+
+function getRepoRoot(): string {
+  return path.join(__dirname, '..');
+}
+
+function normalizeTemplateId(template: string): string {
+  if (template === 'drystone') {
+    return 'dhrystone';
+  }
+  return template;
+}
+
+function copyDirectoryRecursive(sourceDir: string, destinationDir: string): void {
+  fs.mkdirSync(destinationDir, { recursive: true });
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    const srcPath = path.join(sourceDir, entry.name);
+    const dstPath = path.join(destinationDir, entry.name);
+    if (entry.isDirectory()) {
+      copyDirectoryRecursive(srcPath, dstPath);
+    } else {
+      fs.copyFileSync(srcPath, dstPath);
+    }
+  }
 }
 
 function createWindow() {
@@ -192,6 +288,14 @@ function createWindow() {
   const menu = Menu.buildFromTemplate(menuTemplate);
   Menu.setApplicationMenu(menu);
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindowReady = true;
+    if (pendingTraceOpenPath) {
+      mainWindow?.webContents.send('trace:open', pendingTraceOpenPath);
+      pendingTraceOpenPath = null;
+    }
+  });
+
   mainWindow.on('ready-to-show', () => {
     log.info('Window ready to show');
     mainWindow?.show();
@@ -199,9 +303,12 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
-    if (qemuProcess) {
-      qemuProcess.kill();
-      qemuProcess = null;
+    terminateChildProcess(qemuProcess, 'qemu process');
+    qemuProcess = null;
+    terminateChildProcess(managedRunProcess, 'managed run process');
+    managedRunProcess = null;
+    for (const sessionId of traceSessions.keys()) {
+      closeTraceSession(sessionId);
     }
   });
 
@@ -221,10 +328,55 @@ function createWindow() {
   log.info('Main window created successfully');
 }
 
+function isLinxTracePath(p: string): boolean {
+  return p.endsWith('.linxtrace.jsonl');
+}
+
+function deriveMetaPathFromTrace(tracePath: string): string {
+  if (tracePath.endsWith('.linxtrace.jsonl')) {
+    return tracePath.replace(/\.linxtrace\.jsonl$/, '.linxtrace.meta.json');
+  }
+  if (tracePath.endsWith('.linxtrace.meta.json')) {
+    return tracePath;
+  }
+  return `${tracePath}.meta.json`;
+}
+
+function closeTraceSession(sessionId: number): boolean {
+  const sess = traceSessions.get(sessionId);
+  if (!sess) {
+    return false;
+  }
+  try {
+    fs.closeSync(sess.fd);
+  } catch (error) {
+    log.warn(`Failed closing trace session fd ${sessionId}`, error);
+  }
+  traceSessions.delete(sessionId);
+  return true;
+}
+
+function requestOpenTrace(pathToOpen: string) {
+  const normalized = path.resolve(pathToOpen);
+  if (!fs.existsSync(normalized) || !isLinxTracePath(normalized)) {
+    return;
+  }
+  if (mainWindow && mainWindowReady) {
+    mainWindow.webContents.send('trace:open', normalized);
+  } else {
+    pendingTraceOpenPath = normalized;
+  }
+}
+
 // App lifecycle
 app.whenReady().then(() => {
   log.info('App ready');
   createWindow();
+
+  const argTrace = process.argv.find((arg) => typeof arg === 'string' && arg.endsWith('.linxtrace.jsonl'));
+  if (argTrace) {
+    requestOpenTrace(argTrace);
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -233,8 +385,16 @@ app.whenReady().then(() => {
   });
 });
 
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  requestOpenTrace(filePath);
+});
+
 app.on('window-all-closed', () => {
   log.info('All windows closed');
+  for (const sessionId of traceSessions.keys()) {
+    closeTraceSession(sessionId);
+  }
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -247,6 +407,7 @@ ipcMain.handle('dialog:openFile', async (_, options) => {
   log.info('Opening file dialog');
   const result = await dialog.showOpenDialog(mainWindow!, {
     properties: ['openFile'],
+    defaultPath: options?.defaultPath,
     filters: options?.filters || [
       { name: 'All Files', extensions: ['*'] },
       { name: 'Python', extensions: ['py'] },
@@ -288,6 +449,74 @@ ipcMain.handle('fs:readFile', async (_, filePath: string) => {
     log.error('Error reading file:', error);
     return { success: false, error: error.message };
   }
+});
+
+ipcMain.handle('trace:readMeta', async (_, tracePath: string) => {
+  try {
+    const metaPath = deriveMetaPathFromTrace(path.resolve(tracePath));
+    const metaJson = fs.readFileSync(metaPath, 'utf-8');
+    return { ok: true, metaPath, metaJson };
+  } catch (error: any) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle('trace:openSession', async (_, tracePath: string) => {
+  try {
+    const normalized = path.resolve(tracePath);
+    const st = fs.statSync(normalized);
+    if (!st.isFile()) {
+      return { ok: false, error: 'trace path is not a file' };
+    }
+    const fd = fs.openSync(normalized, 'r');
+    const sessionId = traceSessionCounter++;
+    traceSessions.set(sessionId, {
+      sessionId,
+      tracePath: normalized,
+      fd,
+      sizeBytes: Number(st.size || 0),
+      mtimeMs: Number(st.mtimeMs || 0),
+    });
+    return {
+      ok: true,
+      sessionId,
+      sizeBytes: Number(st.size || 0),
+      mtimeMs: Number(st.mtimeMs || 0),
+    };
+  } catch (error: any) {
+    return { ok: false, error: error.message || String(error) };
+  }
+});
+
+ipcMain.handle(
+  'trace:readChunk',
+  async (_: unknown, sessionId: number, offset: number, bytes: number) => {
+    const sess = traceSessions.get(Number(sessionId));
+    if (!sess) {
+      return { ok: false, error: `unknown trace session ${sessionId}` };
+    }
+    try {
+      const safeOffset = Math.max(0, Number(offset || 0));
+      const safeBytes = Math.max(1, Math.min(64 * 1024 * 1024, Number(bytes || 0)));
+      if (safeOffset >= sess.sizeBytes) {
+        return { ok: true, chunk: '', nextOffset: safeOffset, eof: true };
+      }
+
+      const readBytes = Math.min(safeBytes, sess.sizeBytes - safeOffset);
+      const buf = Buffer.allocUnsafe(readBytes);
+      const n = fs.readSync(sess.fd, buf, 0, readBytes, safeOffset);
+      const chunk = n > 0 ? buf.toString('utf8', 0, n) : '';
+      const nextOffset = safeOffset + n;
+      const eof = nextOffset >= sess.sizeBytes;
+      return { ok: true, chunk, nextOffset, eof };
+    } catch (error: any) {
+      return { ok: false, error: error.message || String(error) };
+    }
+  },
+);
+
+ipcMain.handle('trace:closeSession', async (_, sessionId: number) => {
+  return { ok: closeTraceSession(Number(sessionId)) };
 });
 
 ipcMain.handle('fs:writeFile', async (_, filePath: string, content: string) => {
@@ -365,6 +594,133 @@ ipcMain.handle('fs:rename', async (_, oldPath: string, newPath: string) => {
   }
 });
 
+ipcMain.handle('project:createFromTemplate', async (_event, request: {
+  name: string;
+  location: string;
+  template: string;
+}) => {
+  try {
+    const normalizedTemplate = normalizeTemplateId(request.template || 'empty');
+    const safeName = (request.name || 'linxcoresight-project').trim();
+    const location = (request.location || '').trim();
+    if (!safeName || !location) {
+      return { success: false, error: 'Project name and location are required' };
+    }
+
+    const projectPath = path.join(location, safeName);
+    if (fs.existsSync(projectPath)) {
+      const entries = fs.readdirSync(projectPath);
+      if (entries.length > 0) {
+        return { success: false, error: `Project directory already exists and is not empty: ${projectPath}` };
+      }
+    } else {
+      fs.mkdirSync(projectPath, { recursive: true });
+    }
+
+    const repoRoot = getRepoRoot();
+    const preparedTemplateDir = path.join(repoRoot, 'templates', 'prepared', normalizedTemplate);
+    const isPreparedTemplate = fs.existsSync(preparedTemplateDir);
+
+    if (isPreparedTemplate) {
+      copyDirectoryRecursive(preparedTemplateDir, projectPath);
+
+      const benchmarkSourceDir = path.join(repoRoot, 'third_party', 'benchmarks', normalizedTemplate);
+      if (fs.existsSync(benchmarkSourceDir)) {
+        copyDirectoryRecursive(benchmarkSourceDir, path.join(projectPath, 'benchmarks', normalizedTemplate));
+      }
+    } else {
+      fs.mkdirSync(path.join(projectPath, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(projectPath, 'include'), { recursive: true });
+      fs.mkdirSync(path.join(projectPath, 'build'), { recursive: true });
+      const templateContent: Record<string, string> = {
+        blink: `// LinxCoreSight Blink Template\n\nvoid _start(void) {\n  while (1) {\n  }\n}\n`,
+        uart: `#include <stdint.h>\n\n#define UART_DR (*(volatile uint32_t *)(0x10000000))\n\nvoid _start(void) {\n  UART_DR = 'H';\n  UART_DR = 'i';\n  UART_DR = '\\n';\n}\n`,
+        cpu: `// LinxCoreSight CPU Core Template\n\nvoid _start(void) {\n}\n`,
+        empty: `// LinxCoreSight Project\n\nvoid _start(void) {\n}\n`,
+      };
+      fs.writeFileSync(path.join(projectPath, 'src', 'main.c'), templateContent[normalizedTemplate] || templateContent.empty, 'utf-8');
+    }
+
+    const configPath = path.join(projectPath, 'linxcoresight.json');
+    let config: Record<string, any> = {};
+    if (fs.existsSync(configPath)) {
+      try {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      } catch (_error) {
+        config = {};
+      }
+    }
+    config.name = safeName;
+    config.template = normalizedTemplate;
+    config.createdAt = config.createdAt || new Date().toISOString();
+    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+
+    return { success: true, projectPath, template: normalizedTemplate };
+  } catch (error: any) {
+    log.error('Error creating project from template:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('process:run', async (_event, options: {
+  command: string;
+  args: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  streamOutput?: boolean;
+  managed?: boolean;
+}) => {
+  log.info('Running process:', options.command, options.args);
+  return new Promise((resolve) => {
+    const streamOutput = options.streamOutput === true;
+    const managed = options.managed === true;
+    if (managed) {
+      terminateChildProcess(managedRunProcess, 'previous managed run process');
+      managedRunProcess = null;
+    }
+
+    const proc = spawn(options.command, options.args || [], {
+      cwd: options.cwd || process.cwd(),
+      shell: false,
+      detached: managed && process.platform !== 'win32',
+      env: { ...process.env, ...(options.env || {}) },
+    });
+    if (managed) {
+      managedRunProcess = proc;
+    }
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout?.on('data', (data) => {
+      const text = data.toString();
+      stdout += text;
+      if (streamOutput) {
+        mainWindow?.webContents.send('process:output', { type: 'stdout', data: text });
+      }
+    });
+    proc.stderr?.on('data', (data) => {
+      const text = data.toString();
+      stderr += text;
+      if (streamOutput) {
+        mainWindow?.webContents.send('process:output', { type: 'stderr', data: text });
+      }
+    });
+    proc.on('close', (code) => {
+      if (managedRunProcess === proc) {
+        managedRunProcess = null;
+      }
+      resolve({ success: code === 0, stdout, stderr, exitCode: code ?? -1 });
+    });
+    proc.on('error', (error) => {
+      if (managedRunProcess === proc) {
+        managedRunProcess = null;
+      }
+      resolve({ success: false, stdout, stderr: `${stderr}\n${error.message}`, exitCode: -1 });
+    });
+  });
+});
+
 // Compiler integration
 ipcMain.handle('compiler:compile', async (_, options: { command: string; args: string[]; cwd?: string }) => {
   log.info('Running compiler:', options.command, options.args);
@@ -408,15 +764,27 @@ ipcMain.handle('emulator:run', async (_, options: { command: string; args: strin
   log.info('Starting QEMU:', options.command, options.args);
 
   if (qemuProcess) {
-    qemuProcess.kill();
+    terminateChildProcess(qemuProcess, 'previous qemu process');
     qemuProcess = null;
   }
 
   return new Promise((resolve) => {
+    if (!options.command) {
+      resolve({ success: false, stdout: '', stderr: 'QEMU command is empty', exitCode: -1 });
+      return;
+    }
+
+    const isPathLike = options.command.includes(path.sep) || options.command.startsWith('.');
+    if (isPathLike && !fs.existsSync(options.command)) {
+      resolve({ success: false, stdout: '', stderr: `QEMU not found: ${options.command}`, exitCode: -1 });
+      return;
+    }
+
     qemuProcess = spawn(options.command, options.args, {
       cwd: options.cwd || process.cwd(),
-      shell: true,
-      env: { ...process.env }
+      shell: false,
+      detached: process.platform !== 'win32',
+      env: { ...process.env },
     });
 
     let stdout = '';
@@ -443,18 +811,21 @@ ipcMain.handle('emulator:run', async (_, options: { command: string; args: strin
 
     qemuProcess.on('error', (error) => {
       log.error('QEMU error:', error);
+      qemuProcess = null;
       resolve({ success: false, stdout, stderr: error.message, exitCode: -1 });
     });
-
-    resolve({ success: true, pid: qemuProcess.pid });
   });
 });
 
 ipcMain.handle('emulator:stop', async () => {
   log.info('Stopping QEMU');
-  if (qemuProcess) {
-    qemuProcess.kill();
-    qemuProcess = null;
+  const stoppedQemu = terminateChildProcess(qemuProcess, 'qemu process');
+  qemuProcess = null;
+
+  const stoppedManaged = terminateChildProcess(managedRunProcess, 'managed run process');
+  managedRunProcess = null;
+
+  if (stoppedQemu || stoppedManaged) {
     return { success: true };
   }
   return { success: false, error: 'No process running' };

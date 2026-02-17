@@ -1,0 +1,50 @@
+{
+  "name": "coremark-demo",
+  "template": "coremark",
+  "createdAt": "2026-02-14T00:00:00.000Z",
+  "buildProfile": {
+    "kind": "command",
+    "build": {
+      "command": "python3",
+      "args": [
+        "scripts/run_benchmark_demo.py",
+        "--benchmark",
+        "coremark",
+        "--action",
+        "build"
+      ]
+    },
+    "run": {
+      "command": "python3",
+      "args": [
+        "scripts/run_benchmark_demo.py",
+        "--benchmark",
+        "coremark",
+        "--action",
+        "run"
+      ]
+    },
+    "buildSuccessChecks": {
+      "contains": [
+        "ok: built"
+      ]
+    },
+    "runSuccessChecks": {
+      "contains": [
+        "ok: coremark run validated"
+      ],
+      "notContains": [
+        "Errors detected",
+        "ERROR!"
+      ]
+    }
+  },
+  "artifacts": {
+    "elf": "build/coremark/coremark.elf",
+    "bin": "build/coremark/coremark.bin",
+    "objdump": "build/coremark/coremark.objdump.txt",
+    "pipeview": "build/coremark/pipeview.json",
+    "qemuLog": "build/coremark/qemu.log",
+    "qemuTrace": "build/coremark/qemu.in_asm.log"
+  }
+}

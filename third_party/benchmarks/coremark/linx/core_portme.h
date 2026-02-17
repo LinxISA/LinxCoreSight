@@ -1,0 +1,127 @@
+/*
+ * LinxISA CoreMark port (minimal).
+ *
+ * CoreMark upstream expects the port to provide `core_portme.h/.c`.
+ * This port targets the LinxISA QEMU `virt` machine (freestanding).
+ */
+
+#ifndef CORE_PORTME_H
+#define CORE_PORTME_H
+
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+
+/* CoreMark configuration */
+#ifndef HAS_FLOAT
+/* Our minimal libc printf does not support %f. */
+#define HAS_FLOAT 0
+#endif
+
+#ifndef HAS_TIME_H
+#define HAS_TIME_H 0
+#endif
+
+#ifndef USE_CLOCK
+#define USE_CLOCK 0
+#endif
+
+#ifndef HAS_STDIO
+#define HAS_STDIO 1
+#endif
+
+#ifndef HAS_PRINTF
+#define HAS_PRINTF 1
+#endif
+
+/* Provide compiler metadata for the CoreMark report. */
+#ifndef COMPILER_VERSION
+#ifdef __clang__
+#define COMPILER_VERSION "clang " __clang_version__
+#else
+#define COMPILER_VERSION "unknown"
+#endif
+#endif
+
+#ifndef COMPILER_FLAGS
+#define COMPILER_FLAGS FLAGS_STR
+#endif
+
+#ifndef MEM_LOCATION
+#define MEM_LOCATION "STACK"
+#endif
+
+/* CoreMark basic types */
+typedef int8_t   ee_s8;
+typedef uint8_t  ee_u8;
+typedef int16_t  ee_s16;
+typedef uint16_t ee_u16;
+typedef int32_t  ee_s32;
+typedef uint32_t ee_u32;
+typedef double   ee_f32;
+
+/* Must be able to hold pointers. */
+typedef uintptr_t ee_ptr_int;
+
+typedef size_t ee_size_t;
+
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
+/* Align an address to 32-bit. */
+#define align_mem(x) (void *)(4 + (((ee_ptr_int)(x)-1) & ~((ee_ptr_int)3)))
+
+/* Timing: abstract tick type */
+typedef ee_u32 CORE_TICKS;
+
+/* Seeding */
+#ifndef SEED_METHOD
+#define SEED_METHOD SEED_VOLATILE
+#endif
+
+/* Memory allocation strategy: keep the default stack allocation */
+#ifndef MEM_METHOD
+#define MEM_METHOD MEM_STACK
+#endif
+
+/* Single-threaded */
+#ifndef MULTITHREAD
+#define MULTITHREAD 1
+#define USE_PTHREAD 0
+#define USE_FORK    0
+#define USE_SOCKET  0
+#endif
+
+/* We run in a freestanding environment with no argv */
+#ifndef MAIN_HAS_NOARGC
+#define MAIN_HAS_NOARGC 1
+#endif
+
+#ifndef MAIN_HAS_NORETURN
+#define MAIN_HAS_NORETURN 0
+#endif
+
+extern ee_u32 default_num_contexts;
+
+typedef struct CORE_PORTABLE_S {
+    ee_u8 portable_id;
+} core_portable;
+
+void portable_init(core_portable *p, int *argc, char *argv[]);
+void portable_fini(core_portable *p);
+
+#if !defined(PROFILE_RUN) && !defined(PERFORMANCE_RUN) && !defined(VALIDATION_RUN)
+#if (TOTAL_DATA_SIZE == 1200)
+#define PROFILE_RUN 1
+#elif (TOTAL_DATA_SIZE == 2000)
+#define PERFORMANCE_RUN 1
+#else
+#define VALIDATION_RUN 1
+#endif
+#endif
+
+int ee_printf(const char *fmt, ...);
+
+#endif /* CORE_PORTME_H */
+

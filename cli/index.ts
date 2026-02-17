@@ -11,19 +11,117 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { promises as fs } from 'fs';
+import { existsSync } from 'fs';
 import path from 'path';
+import os from 'os';
+import { fileURLToPath } from 'url';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 
 // Version
 const VERSION = '1.0.0';
 const PROGRAM = 'linxcoresight';
 const LEGACY_PROGRAM = 'januscore';
 const DOCS_URL = 'https://github.com/zhoubot/LinxCoreSight';
+const execFileAsync = promisify(execFile);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const CLI_ROOT = path.resolve(__dirname, '..');
+const REPO_ROOT = path.resolve(CLI_ROOT, '..');
 
 function projectConfigCandidates(projectPath: string) {
   return {
     primary: path.join(projectPath, 'linxcoresight.json'),
     legacy: path.join(projectPath, 'januscore.json'),
   };
+}
+
+interface DoctorCheck {
+  name: string;
+  ok: boolean;
+  path?: string;
+  version?: string;
+  error?: string;
+}
+
+interface DoctorReport {
+  checks: DoctorCheck[];
+  smoke?: {
+    compile: boolean;
+    qemuStart: boolean;
+    error?: string;
+  };
+}
+
+function normalizeTemplateId(template: string): string {
+  if (template === 'drystone') {
+    return 'dhrystone';
+  }
+  return template;
+}
+
+async function copyDirectory(sourceDir: string, destinationDir: string): Promise<void> {
+  await fs.mkdir(destinationDir, { recursive: true });
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(sourceDir, entry.name);
+    const dstPath = path.join(destinationDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyDirectory(srcPath, dstPath);
+    } else {
+      await fs.copyFile(srcPath, dstPath);
+    }
+  }
+}
+
+async function createPreparedProject(projectPath: string, name: string, template: 'coremark' | 'dhrystone'): Promise<void> {
+  const templateDir = path.join(REPO_ROOT, 'templates', 'prepared', template);
+  const benchmarkDir = path.join(REPO_ROOT, 'third_party', 'benchmarks', template);
+
+  await copyDirectory(templateDir, projectPath);
+  if (await exists(benchmarkDir)) {
+    await copyDirectory(benchmarkDir, path.join(projectPath, 'benchmarks', template));
+  }
+
+  const configPath = path.join(projectPath, 'linxcoresight.json');
+  const raw = await fs.readFile(configPath, 'utf-8');
+  const config = JSON.parse(raw);
+  config.name = name;
+  config.template = template;
+  config.createdAt = new Date().toISOString();
+  await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf-8');
+}
+
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function findFirstExisting(candidates: string[]): string | null {
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+async function getVersionFirstLine(command: string): Promise<string> {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, ['--version'], { timeout: 4000 });
+    const text = `${stdout || ''}\n${stderr || ''}`;
+    const firstNonEmpty = text
+      .split(/[\r\n]+/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+    return firstNonEmpty || 'unknown';
+  } catch (error: any) {
+    return `error: ${error.message}`;
+  }
 }
 
 // ============================================
@@ -65,39 +163,41 @@ projectCmd
   .option('-p, --path <path>', 'Project directory path')
   .option('--no-git', 'Skip Git initialization')
   .action(async (name, options) => {
-    const projectPath = options.path || path.join(process.cwd(), name);
+    const template = normalizeTemplateId(String(options.template || 'empty'));
+    const projectPath = options.path ? path.resolve(options.path) : path.join(process.cwd(), name);
     
     console.log(chalk.cyan('\n⚡ Creating new project:'), chalk.white(name));
     console.log(chalk.gray('  Path:'), projectPath);
-    console.log(chalk.gray('  Template:'), options.template);
+    console.log(chalk.gray('  Template:'), template);
     
     try {
-      // Create project structure
       await fs.mkdir(projectPath, { recursive: true });
-      await fs.mkdir(path.join(projectPath, 'src'), { recursive: true });
-      await fs.mkdir(path.join(projectPath, 'include'), { recursive: true });
-      await fs.mkdir(path.join(projectPath, 'build'), { recursive: true });
-      
-      // Create project configuration
-      const config = {
-        name,
-        version: '1.0.0',
-        target: 'linx64',
-        template: options.template,
-        created: new Date().toISOString()
-      };
-      
-      await fs.writeFile(
-        path.join(projectPath, 'linxcoresight.json'),
-        JSON.stringify(config, null, 2)
-      );
-      
-      // Create main file based on template
-      const mainContent = getTemplateContent(options.template);
-      await fs.writeFile(
-        path.join(projectPath, 'src', 'main.li'),
-        mainContent
-      );
+
+      if (template === 'coremark' || template === 'dhrystone') {
+        await createPreparedProject(projectPath, name, template);
+      } else {
+        await fs.mkdir(path.join(projectPath, 'src'), { recursive: true });
+        await fs.mkdir(path.join(projectPath, 'include'), { recursive: true });
+        await fs.mkdir(path.join(projectPath, 'build'), { recursive: true });
+
+        const config = {
+          name,
+          version: '1.0.0',
+          target: 'linx64',
+          template,
+          created: new Date().toISOString()
+        };
+        await fs.writeFile(
+          path.join(projectPath, 'linxcoresight.json'),
+          JSON.stringify(config, null, 2)
+        );
+
+        const mainContent = getTemplateContent(template);
+        await fs.writeFile(
+          path.join(projectPath, 'src', 'main.li'),
+          mainContent
+        );
+      }
       
       // Initialize Git if requested
       if (options.git) {
@@ -648,23 +748,139 @@ agentCmd
 program
   .command('doctor')
   .description('Run diagnostics to check environment')
-  .action(async () => {
+  .option('--smoke', 'Run compile + qemu smoke check')
+  .action(async (options) => {
     console.log(chalk.cyan('\n⚡ Running diagnostics...\n'));
-    
-    const checks = [
-      { name: 'Node.js', status: '✓', version: process.version },
-      { name: 'npm', status: '✓', version: '10.0.0' },
-      { name: 'LinxCoreSight CLI', status: '✓', version: VERSION },
-      { name: 'Compiler', status: '✓', found: 'linx-cc' },
-      { name: 'QEMU/Linx', status: '✓', found: 'linx-emu' },
+
+    const home = os.homedir();
+    const llvmBin = process.env.LINX_LLVM_BIN || path.join(home, 'llvm-project', 'build-linxisa-clang', 'bin');
+    const clangPath = findFirstExisting([process.env.CLANG || '', path.join(llvmBin, 'clang')]);
+    const clangxxPath = findFirstExisting([process.env.CLANGXX || '', path.join(llvmBin, 'clang++')]);
+    const lldPath = findFirstExisting([process.env.LLD || '', path.join(llvmBin, 'ld.lld')]);
+    const qemuPath = findFirstExisting([
+      process.env.QEMU || '',
+      path.join(home, 'qemu', 'build-linx', 'qemu-system-linx64'),
+      path.join(home, 'qemu', 'build', 'qemu-system-linx64'),
+      path.join(home, 'qemu', 'build-tci', 'qemu-system-linx64'),
+    ]);
+    const pycPath = findFirstExisting([
+      process.env.PYC_COMPILE || '',
+      path.join(home, 'pyCircuit', 'build-top', 'bin', 'pyc-compile'),
+    ]);
+    const linxIsaPath = findFirstExisting([
+      process.env.LINX_ISA_ROOT || '',
+      path.join(home, 'linx-isa'),
+      path.join(home, 'linxisa'),
+    ]);
+
+    const checks: DoctorCheck[] = [
+      { name: 'Node.js', ok: true, version: process.version },
+      { name: 'LinxCoreSight CLI', ok: true, version: VERSION },
+      {
+        name: 'clang',
+        ok: Boolean(clangPath),
+        path: clangPath || undefined,
+        version: clangPath ? await getVersionFirstLine(clangPath) : undefined,
+        error: clangPath ? undefined : 'not found',
+      },
+      {
+        name: 'clang++',
+        ok: Boolean(clangxxPath),
+        path: clangxxPath || undefined,
+        version: clangxxPath ? await getVersionFirstLine(clangxxPath) : undefined,
+        error: clangxxPath ? undefined : 'not found',
+      },
+      {
+        name: 'ld.lld',
+        ok: Boolean(lldPath),
+        path: lldPath || undefined,
+        version: lldPath ? await getVersionFirstLine(lldPath) : undefined,
+        error: lldPath ? undefined : 'not found',
+      },
+      {
+        name: 'qemu-system-linx64',
+        ok: Boolean(qemuPath),
+        path: qemuPath || undefined,
+        version: qemuPath ? await getVersionFirstLine(qemuPath) : undefined,
+        error: qemuPath ? undefined : 'not found',
+      },
+      {
+        name: 'pyc-compile',
+        ok: Boolean(pycPath),
+        path: pycPath || undefined,
+        version: pycPath ? await getVersionFirstLine(pycPath) : undefined,
+        error: pycPath ? undefined : 'not found',
+      },
+      {
+        name: 'linx-isa root',
+        ok: Boolean(linxIsaPath),
+        path: linxIsaPath || undefined,
+        error: linxIsaPath ? undefined : 'not found',
+      },
     ];
-    
-    for (const check of checks) {
-      console.log(chalk.green(check.status), chalk.gray(check.name));
-      console.log(chalk.gray('   '), Object.values(check).slice(2).join(' '));
+
+    let smoke: DoctorReport['smoke'] | undefined;
+    if (options.smoke && clangPath && lldPath && qemuPath) {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'lcs-doctor-'));
+      const testC = path.join(tmpDir, 'doctor_smoke.c');
+      const obj = path.join(tmpDir, 'doctor_smoke.o');
+      const elf = path.join(tmpDir, 'doctor_smoke.elf');
+      await fs.writeFile(testC, 'void _start(void) { for (;;) { } }\\n', 'utf-8');
+
+      smoke = { compile: false, qemuStart: false };
+      try {
+        await execFileAsync(clangPath, ['-target', 'linx64-linx-none-elf', '-ffreestanding', '-fno-builtin', '-nostdlib', '-c', testC, '-o', obj], { timeout: 5000 });
+        await execFileAsync(lldPath, ['-r', obj, '-o', elf], { timeout: 5000 });
+        smoke.compile = true;
+
+        try {
+          await execFileAsync(qemuPath, ['-machine', 'virt', '-nographic', '-monitor', 'none', '-kernel', elf], { timeout: 1500 });
+          smoke.qemuStart = true;
+        } catch (error: any) {
+          const stderr = `${error.stderr || ''}`;
+          if (error.killed && !stderr.includes('No machine specified')) {
+            smoke.qemuStart = true;
+          } else {
+            smoke.error = stderr || error.message;
+          }
+        }
+      } catch (error: any) {
+        smoke.error = error.stderr || error.message;
+      }
     }
-    
-    console.log(chalk.green('\n✓ All checks passed!\n'));
+
+    const report: DoctorReport = { checks, smoke };
+
+    for (const check of report.checks) {
+      const status = check.ok ? chalk.green('✓') : chalk.red('✗');
+      console.log(status, chalk.gray(check.name));
+      if (check.path) {
+        console.log(chalk.gray('   path:'), check.path);
+      }
+      if (check.version) {
+        console.log(chalk.gray('   version:'), check.version);
+      }
+      if (check.error) {
+        console.log(chalk.red('   error:'), check.error);
+      }
+    }
+
+    if (report.smoke) {
+      console.log(chalk.cyan('\nSmoke check:'));
+      console.log(report.smoke.compile ? chalk.green('✓ compile') : chalk.red('✗ compile'));
+      console.log(report.smoke.qemuStart ? chalk.green('✓ qemu start') : chalk.red('✗ qemu start'));
+      if (report.smoke.error) {
+        console.log(chalk.red('  error:'), report.smoke.error.trim());
+      }
+    }
+
+    const allOk = report.checks.every((c) => c.ok) && (!report.smoke || (report.smoke.compile && report.smoke.qemuStart));
+    if (allOk) {
+      console.log(chalk.green('\n✓ Diagnostics passed.\n'));
+    } else {
+      console.log(chalk.red('\n✗ Diagnostics found issues.\n'));
+      process.exitCode = 1;
+    }
   });
 
 program

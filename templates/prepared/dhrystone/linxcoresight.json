@@ -1,0 +1,46 @@
+{
+  "name": "dhrystone-demo",
+  "template": "dhrystone",
+  "createdAt": "2026-02-14T00:00:00.000Z",
+  "buildProfile": {
+    "kind": "command",
+    "build": {
+      "command": "python3",
+      "args": [
+        "scripts/run_benchmark_demo.py",
+        "--benchmark",
+        "dhrystone",
+        "--action",
+        "build"
+      ]
+    },
+    "run": {
+      "command": "python3",
+      "args": [
+        "scripts/run_benchmark_demo.py",
+        "--benchmark",
+        "dhrystone",
+        "--action",
+        "run"
+      ]
+    },
+    "buildSuccessChecks": {
+      "contains": [
+        "ok: built"
+      ]
+    },
+    "runSuccessChecks": {
+      "contains": [
+        "ok: dhrystone run validated"
+      ]
+    }
+  },
+  "artifacts": {
+    "elf": "build/dhrystone/dhrystone.elf",
+    "bin": "build/dhrystone/dhrystone.bin",
+    "objdump": "build/dhrystone/dhrystone.objdump.txt",
+    "pipeview": "build/dhrystone/pipeview.json",
+    "qemuLog": "build/dhrystone/qemu.log",
+    "qemuTrace": "build/dhrystone/qemu.in_asm.log"
+  }
+}
