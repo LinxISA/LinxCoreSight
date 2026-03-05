@@ -16,12 +16,22 @@ export interface LinxTraceLane {
 
 export interface LinxTraceRowCatalog {
   row_id: number;
+  row_sid?: string;  // Optional - new format uses uop_uid instead
+  uop_uid?: string; // New format uses this instead of row_sid
   row_kind: string;
-  core_id: number;
-  block_uid: string;
-  uop_uid: string;
-  left_label: string;
-  detail_defaults: string;
+  entity_kind?: string;
+  lifecycle_flags?: string[];
+  order_key?: string;
+  id_refs?: {
+    seq?: number | null;
+    uop_uid: string;
+    block_uid: string;
+    block_bid: string;
+  };
+  core_id?: number;
+  block_uid?: string;
+  left_label?: string;
+  detail_defaults?: string;
 }
 
 export interface LinxTraceMeta {
@@ -60,7 +70,13 @@ type QueryResolver = {
 
 type ElectronTraceAPI = {
   readFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
-  traceReadMeta?: (tracePath: string) => Promise<{ ok: boolean; metaPath?: string; metaJson?: string; error?: string }>;
+  traceReadMeta?: (tracePath: string) => Promise<{
+    ok: boolean;
+    metaPath?: string;
+    meta?: LinxTraceMeta | Record<string, unknown>;
+    metaJson?: string;
+    error?: string;
+  }>;
   traceOpenSession?: (tracePath: string) => Promise<{ ok: boolean; sessionId?: number; sizeBytes?: number; mtimeMs?: number; error?: string }>;
   traceReadChunk?: (sessionId: number, offset: number, bytes: number) => Promise<{ ok: boolean; chunk?: string; nextOffset?: number; eof?: boolean; error?: string }>;
   traceCloseSession?: (sessionId: number) => Promise<{ ok: boolean }>;
@@ -92,7 +108,28 @@ type WorkerErrorMessage = {
   error: string;
 };
 
-type WorkerAnyMessage = WorkerReadyMessage | WorkerQueryMessage | WorkerErrorMessage | Record<string, unknown>;
+type WorkerProgressMessage = {
+  type: 'progress';
+  lineNo: number;
+  occCount: number;
+};
+
+type WorkerChunkAckMessage = {
+  type: 'chunkAck';
+  ok: boolean;
+  eof: boolean;
+  lineNo: number;
+  occCount: number;
+  error?: string;
+};
+
+type WorkerAnyMessage =
+  | WorkerReadyMessage
+  | WorkerQueryMessage
+  | WorkerErrorMessage
+  | WorkerProgressMessage
+  | WorkerChunkAckMessage
+  | Record<string, unknown>;
 
 function parseJsonOrThrow<T>(content: string, where: string): T {
   try {
@@ -100,16 +137,6 @@ function parseJsonOrThrow<T>(content: string, where: string): T {
   } catch (err) {
     throw new Error(`${where}: invalid JSON (${String(err)})`);
   }
-}
-
-function deriveMetaPath(tracePath: string): string {
-  if (tracePath.endsWith('.linxtrace.jsonl')) {
-    return tracePath.replace(/\.linxtrace\.jsonl$/, '.linxtrace.meta.json');
-  }
-  if (tracePath.endsWith('.linxtrace.meta.json')) {
-    return tracePath;
-  }
-  return `${tracePath}.meta.json`;
 }
 
 function stableContractId(stageIds: string[], laneIds: string[], rowSchema: Array<[number, string]>, schemaId: string): string {
@@ -140,6 +167,23 @@ function validateMeta(meta: LinxTraceMeta): void {
   if (!meta.pipeline_schema_id || !meta.contract_id) {
     throw new Error('meta missing pipeline_schema_id/contract_id');
   }
+  for (const row of meta.row_catalog) {
+    if (!row || typeof row !== 'object') {
+      throw new Error('meta.row_catalog contains invalid row object');
+    }
+    // Support both row_sid (legacy) and uop_uid (new format)
+    const hasRowSid = String(row.row_sid || '').trim();
+    const hasUopUid = String(row.uop_uid || '').trim();
+    if (!hasRowSid && !hasUopUid) {
+      throw new Error(`meta.row_catalog row_id=${String(row.row_id)} missing row_sid/uop_uid`);
+    }
+    if (!String(row.row_kind || '').trim()) {
+      throw new Error(`meta.row_catalog row_id=${String(row.row_id)} missing row_kind`);
+    }
+    if (row.order_key !== undefined && !String(row.order_key).trim() && row.order_key !== '0') {
+      throw new Error(`meta.row_catalog row_id=${String(row.row_id)} invalid order_key`);
+    }
+  }
   const stageIds = meta.stage_catalog.map((s) => String(s.stage_id));
   const laneIds = meta.lane_catalog.map((l) => String(l.lane_id));
   const rowSchema: Array<[number, string]> = meta.row_catalog.map((r) => [Number(r.row_id), String(r.row_kind)]);
@@ -155,23 +199,41 @@ function validateMeta(meta: LinxTraceMeta): void {
 async function readMeta(tracePath: string, api: ElectronTraceAPI): Promise<{ metaPath: string; meta: LinxTraceMeta }> {
   if (api.traceReadMeta) {
     const res = await api.traceReadMeta(tracePath);
-    if (!res.ok || !res.metaJson) {
+    if (!res.ok) {
       throw new Error(`failed to read meta for ${tracePath}: ${res.error || 'unknown error'}`);
     }
-    const metaPath = res.metaPath || deriveMetaPath(tracePath);
-    const meta = parseJsonOrThrow<LinxTraceMeta>(res.metaJson, metaPath);
-    validateMeta(meta);
-    return { metaPath, meta };
+    if (res.meta) {
+      const meta = res.meta as unknown as LinxTraceMeta;
+      validateMeta(meta);
+      return { metaPath: res.metaPath || tracePath, meta };
+    }
+    if (res.metaJson) {
+      const parsed = parseJsonOrThrow<LinxTraceMeta>(res.metaJson, 'traceReadMeta');
+      validateMeta(parsed);
+      return { metaPath: res.metaPath || tracePath, meta: parsed };
+    }
+    throw new Error(`traceReadMeta returned no metadata for ${tracePath}`);
   }
 
-  const metaPath = deriveMetaPath(tracePath);
-  const fallback = await api.readFile(metaPath);
+  const fallback = await api.readFile(tracePath);
   if (!fallback.success || !fallback.content) {
-    throw new Error(`failed to read meta file: ${metaPath}${fallback.error ? ` (${fallback.error})` : ''}`);
+    throw new Error(`failed to read trace file: ${tracePath}${fallback.error ? ` (${fallback.error})` : ''}`);
   }
-  const meta = parseJsonOrThrow<LinxTraceMeta>(fallback.content, metaPath);
+  const firstRecord = fallback.content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!firstRecord) {
+    throw new Error(`empty trace file: ${tracePath}`);
+  }
+  const raw = parseJsonOrThrow<Record<string, unknown>>(firstRecord, tracePath);
+  if (raw.type !== 'META') {
+    throw new Error(`missing META record in trace: ${tracePath}`);
+  }
+  const { type: _dropType, ...metaRec } = raw;
+  const meta = metaRec as unknown as LinxTraceMeta;
   validateMeta(meta);
-  return { metaPath, meta };
+  return { metaPath: tracePath, meta };
 }
 
 export class LinxTraceSession {
@@ -196,6 +258,7 @@ export class LinxTraceSession {
   static async open(tracePath: string, api: ElectronTraceAPI, chunkBytes = 8 * 1024 * 1024): Promise<LinxTraceSession> {
     const { metaPath, meta } = await readMeta(tracePath, api);
     const worker = new Worker(new URL('../workers/traceIndex.worker.ts', import.meta.url), { type: 'module' });
+    const loadTimeoutMs = 180000;
 
     let readyResolve: ((msg: WorkerReadyMessage) => void) | null = null;
     let readyReject: ((error: Error) => void) | null = null;
@@ -203,8 +266,15 @@ export class LinxTraceSession {
       readyResolve = resolve;
       readyReject = reject;
     });
+    const failReady = (error: Error): void => {
+      readyReject?.(error);
+      readyReject = null;
+      readyResolve = null;
+    };
 
     const pendingQueries = new Map<number, QueryResolver>();
+    let chunkAckResolve: ((ack: WorkerChunkAckMessage) => void) | null = null;
+    let chunkAckReject: ((error: Error) => void) | null = null;
     worker.onmessage = (evt: MessageEvent<WorkerAnyMessage>) => {
       const msg = evt.data;
       if (!msg || typeof msg !== 'object') {
@@ -215,10 +285,23 @@ export class LinxTraceSession {
           const errMsg = typeof (msg as { error?: unknown }).error === 'string'
             ? (msg as { error?: string }).error
             : 'worker failed preparing trace';
-          readyReject?.(new Error(errMsg));
+          failReady(new Error(errMsg));
         } else {
           readyResolve?.(msg as WorkerReadyMessage);
         }
+        return;
+      }
+      if (msg.type === 'chunkAck') {
+        const ack = msg as WorkerChunkAckMessage;
+        if (!ack.ok) {
+          const err = new Error(ack.error || 'chunk parse failed');
+          chunkAckReject?.(err);
+          failReady(err);
+        } else {
+          chunkAckResolve?.(ack);
+        }
+        chunkAckResolve = null;
+        chunkAckReject = null;
         return;
       }
       if (msg.type === 'queryResult') {
@@ -239,64 +322,122 @@ export class LinxTraceSession {
         return;
       }
       if (msg.type === 'error') {
+        console.error('[LinxTraceSession] Worker error:', msg);
         const err = new Error((msg as WorkerErrorMessage).error || 'worker parse error');
-        readyReject?.(err);
+        chunkAckReject?.(err);
+        chunkAckReject = null;
+        chunkAckResolve = null;
+        failReady(err);
         for (const wait of pendingQueries.values()) {
           wait.reject(err);
         }
         pendingQueries.clear();
       }
     };
-
-    worker.postMessage({ type: 'init', meta });
-
-    let openedSessionId: number | null = null;
-    if (api.traceOpenSession && api.traceReadChunk && api.traceCloseSession) {
-      const opened = await api.traceOpenSession(tracePath);
-      if (!opened.ok || !opened.sessionId) {
-        throw new Error(`failed to open trace stream: ${opened.error || 'unknown error'}`);
+    worker.onerror = (evt: ErrorEvent) => {
+      const err = new Error(evt.message || 'worker crashed');
+      chunkAckReject?.(err);
+      chunkAckReject = null;
+      chunkAckResolve = null;
+      failReady(err);
+      for (const wait of pendingQueries.values()) {
+        wait.reject(err);
       }
-      openedSessionId = opened.sessionId;
-      let offset = 0;
-      let eof = false;
-      while (!eof) {
-        const res = await api.traceReadChunk(opened.sessionId, offset, chunkBytes);
-        if (!res.ok) {
-          throw new Error(`failed to read trace chunk: ${res.error || 'unknown error'}`);
-        }
-        worker.postMessage({ type: 'chunk', chunk: res.chunk || '', eof: Boolean(res.eof) });
-        offset = Number(res.nextOffset || offset);
-        eof = Boolean(res.eof);
+      pendingQueries.clear();
+    };
+    worker.onmessageerror = () => {
+      const err = new Error('worker message deserialization failed');
+      chunkAckReject?.(err);
+      chunkAckReject = null;
+      chunkAckResolve = null;
+      failReady(err);
+      for (const wait of pendingQueries.values()) {
+        wait.reject(err);
       }
-    } else {
-      const fallback = await api.readFile(tracePath);
-      if (!fallback.success || !fallback.content) {
-        throw new Error(`failed to read trace file: ${tracePath}${fallback.error ? ` (${fallback.error})` : ''}`);
-      }
-      worker.postMessage({ type: 'chunk', chunk: fallback.content, eof: true });
-    }
-
-    const ready = await readyPromise;
-    const stageColors: Record<string, string> = {};
-    for (const stage of meta.stage_catalog) {
-      stageColors[String(stage.stage_id)] = String(stage.color || '#9CA3AF');
-    }
-
-    const summary: LinxTraceSessionSummary = {
-      tracePath,
-      metaPath,
-      meta,
-      totalRows: Number(ready.totalRows || meta.row_catalog.length),
-      minCycle: Number(ready.minCycle || 0),
-      maxCycle: Number(ready.maxCycle || 0),
-      occCount: Number(ready.occCount || 0),
-      stageColors,
+      pendingQueries.clear();
     };
 
-    const session = new LinxTraceSession(summary, api, worker);
-    session.openSessionId = openedSessionId;
-    session.queryResolvers = pendingQueries;
-    return session;
+    worker.postMessage({ type: 'init', meta });
+    const sendChunkAndWait = async (chunk: string, eof: boolean): Promise<void> => {
+      await new Promise<void>((resolve, reject) => {
+        chunkAckResolve = () => resolve();
+        chunkAckReject = reject;
+        worker.postMessage({ type: 'chunk', chunk, eof });
+      });
+    };
+
+    let openedSessionId: number | null = null;
+    const timeoutHandle = setTimeout(() => {
+      const err = new Error(`trace load timeout after ${loadTimeoutMs}ms`);
+      chunkAckReject?.(err);
+      chunkAckReject = null;
+      chunkAckResolve = null;
+      failReady(err);
+    }, loadTimeoutMs);
+    try {
+      if (api.traceOpenSession && api.traceReadChunk && api.traceCloseSession) {
+        const opened = await api.traceOpenSession(tracePath);
+        if (!opened.ok || !opened.sessionId) {
+          throw new Error(`failed to open trace stream: ${opened.error || 'unknown error'}`);
+        }
+        openedSessionId = opened.sessionId;
+        let offset = 0;
+        let eof = false;
+        while (!eof) {
+          const res = await api.traceReadChunk(opened.sessionId, offset, chunkBytes);
+          if (!res.ok) {
+            throw new Error(`failed to read trace chunk: ${res.error || 'unknown error'}`);
+          }
+          const nextOffset = Number(res.nextOffset ?? offset);
+          if (!Boolean(res.eof) && nextOffset <= offset) {
+            throw new Error(`trace chunk reader stalled at offset=${offset}`);
+          }
+          await sendChunkAndWait(res.chunk || '', Boolean(res.eof));
+          offset = nextOffset;
+          eof = Boolean(res.eof);
+        }
+      } else {
+        const fallback = await api.readFile(tracePath);
+        if (!fallback.success || !fallback.content) {
+          throw new Error(`failed to read trace file: ${tracePath}${fallback.error ? ` (${fallback.error})` : ''}`);
+        }
+        await sendChunkAndWait(fallback.content, true);
+      }
+
+      const ready = await readyPromise;
+      const stageColors: Record<string, string> = {};
+      for (const stage of meta.stage_catalog) {
+        stageColors[String(stage.stage_id)] = String(stage.color || '#9CA3AF');
+      }
+
+      const summary: LinxTraceSessionSummary = {
+        tracePath,
+        metaPath,
+        meta,
+        totalRows: Number(ready.totalRows || meta.row_catalog.length),
+        minCycle: Number(ready.minCycle || 0),
+        maxCycle: Number(ready.maxCycle || 0),
+        occCount: Number(ready.occCount || 0),
+        stageColors,
+      };
+
+      const session = new LinxTraceSession(summary, api, worker);
+      session.openSessionId = openedSessionId;
+      session.queryResolvers = pendingQueries;
+      return session;
+    } catch (error) {
+      worker.terminate();
+      if (openedSessionId !== null && api.traceCloseSession) {
+        try {
+          await api.traceCloseSession(openedSessionId);
+        } catch {
+          // ignore close error
+        }
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
   }
 
   async queryViewport(req: Omit<ViewportQueryRequest, 'requestId'>): Promise<LinxTraceViewportModel> {

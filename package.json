@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && electron-builder",
+    "build:install": "bash scripts/build_install_app.sh",
     "build:vite": "vite build",
     "preview": "vite preview",
     "electron:dev": "vite build && electron .",
@@ -16,6 +17,7 @@
     "linxtrace:schema-check": "node scripts/linxtrace_cli.js schema-check",
     "linxtrace:first-failure": "node scripts/linxtrace_cli.js first-failure",
     "linxtrace:render-check": "node scripts/linxtrace_cli.js render-check",
+    "linxtrace:control": "node scripts/linxtrace_cli.js control",
     "trace:lint": "node scripts/trace_lint.js",
     "trace:perf": "node scripts/trace_perf_check.js",
     "trace:smoke-tabs": "node scripts/trace_smoke_tabs.js"

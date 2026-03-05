@@ -17,7 +17,7 @@ function runCli(args) {
 }
 
 if (process.argv.length < 3) {
-  console.error('usage: node scripts/trace_perf_check.js <trace.linxtrace.jsonl> [--meta <meta.json>] [--max-ms <n>]');
+  console.error('usage: node scripts/trace_perf_check.js <trace.linxtrace> [--max-ms <n>]');
   process.exit(2);
 }
 
@@ -60,4 +60,3 @@ if (Number.isFinite(maxMs) && totalMs > maxMs) {
   console.error(`perf gate failed: total_ms=${totalMs.toFixed(1)} > max_ms=${maxMs}`);
   process.exit(1);
 }
-

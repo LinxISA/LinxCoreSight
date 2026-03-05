@@ -33,6 +33,10 @@ let qemuProcess: ChildProcess | null = null;
 let managedRunProcess: ChildProcess | null = null;
 let serialPort: any = null;
 let pendingTraceOpenPath: string | null = null;
+let uiSnapshotHook: ((reason: string) => Promise<void>) | null = null;
+const TRACE_META_READER_CHUNK_SIZE = 256 * 1024;
+const TRACE_META_READER_RETRIES = 6;
+const TRACE_META_READER_RETRY_MS = 120;
 
 type TraceFileSession = {
   sessionId: number;
@@ -45,11 +49,22 @@ type TraceFileSession = {
 const traceSessions = new Map<number, TraceFileSession>();
 let traceSessionCounter = 1;
 
+// Canvas-heavy trace rendering is more stable without GPU compositing on some Macs.
+app.disableHardwareAcceleration();
+
 // Force production mode for now - check if we're in packaged app
 const isProd = app.isPackaged;
 const isDev = !isProd && process.env.NODE_ENV !== 'production';
+const UI_SNAPSHOT_ENV = process.env.LCS_UI_SNAPSHOT || process.env.LINXCORESIGHT_UI_SNAPSHOT || '';
+const UI_SNAPSHOT_ARG = process.argv.includes('--ui-snapshot');
+const UI_SNAPSHOT_ENABLED = UI_SNAPSHOT_ENV === '1' || UI_SNAPSHOT_ENV.toLowerCase() === 'true' || UI_SNAPSHOT_ARG;
 
-log.info('App packaging status:', { isPackaged: app.isPackaged, isDev, nodeEnv: process.env.NODE_ENV });
+log.info('App packaging status:', {
+  isPackaged: app.isPackaged,
+  isDev,
+  nodeEnv: process.env.NODE_ENV,
+  uiSnapshotEnabled: UI_SNAPSHOT_ENABLED,
+});
 
 // Handle renderer process errors
 app.on('render-process-gone', (_event, _details) => {
@@ -288,11 +303,70 @@ function createWindow() {
   const menu = Menu.buildFromTemplate(menuTemplate);
   Menu.setApplicationMenu(menu);
 
+  const captureRendererDomSnapshot = async (reason: string) => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    try {
+      const snapshot = await mainWindow.webContents.executeJavaScript(`(() => {
+        const imgs = Array.from(document.querySelectorAll('img')).map((img) => {
+          const r = img.getBoundingClientRect();
+          return { src: img.getAttribute('src') || '', w: r.width, h: r.height, x: r.x, y: r.y };
+        });
+        const canvases = Array.from(document.querySelectorAll('canvas')).map((c) => {
+          const r = c.getBoundingClientRect();
+          return { w: r.width, h: r.height, x: r.x, y: r.y };
+        });
+        const body = getComputedStyle(document.body).backgroundColor;
+        const rootEl = document.getElementById('root');
+        const rootBg = rootEl ? getComputedStyle(rootEl).backgroundColor : 'n/a';
+        const rootRect = rootEl ? rootEl.getBoundingClientRect() : { width: -1, height: -1 };
+        const text = rootEl ? (rootEl.textContent || '').slice(0, 240) : '';
+        return {
+          title: document.title,
+          bodyBg: body,
+          rootBg,
+          rootW: rootRect.width,
+          rootH: rootRect.height,
+          rootText: text,
+          imgCount: imgs.length,
+          imgs,
+          canvasCount: canvases.length,
+          canvases,
+        };
+      })()`);
+      log.info('Renderer DOM snapshot', { reason, snapshot } as any);
+    } catch (error) {
+      log.warn('Renderer DOM snapshot failed', { reason, error } as any);
+    }
+  };
+  uiSnapshotHook = captureRendererDomSnapshot;
+
   mainWindow.webContents.on('did-finish-load', () => {
+    log.info('Renderer did-finish-load');
     mainWindowReady = true;
     if (pendingTraceOpenPath) {
       mainWindow?.webContents.send('trace:open', pendingTraceOpenPath);
       pendingTraceOpenPath = null;
+    }
+    if (UI_SNAPSHOT_ENABLED) {
+      setTimeout(() => {
+        void captureRendererDomSnapshot('did-finish-load+2500ms');
+      }, 2500);
+      setTimeout(() => {
+        void captureRendererDomSnapshot('did-finish-load+7000ms');
+      }, 7000);
+    }
+  });
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    log.error('Renderer did-fail-load', { errorCode, errorDescription, validatedURL });
+    void captureRendererDomSnapshot('did-fail-load');
+  });
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    log.error('Renderer process gone', details);
+    void captureRendererDomSnapshot('render-process-gone');
+  });
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    if (level >= 2 || /error|exception|failed|trace load timeout/i.test(message)) {
+      log.error('Renderer console', { level, message, line, sourceId });
     }
   });
 
@@ -303,6 +377,7 @@ function createWindow() {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
+    uiSnapshotHook = null;
     terminateChildProcess(qemuProcess, 'qemu process');
     qemuProcess = null;
     terminateChildProcess(managedRunProcess, 'managed run process');
@@ -322,24 +397,161 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
-  // Open DevTools for debugging
-  mainWindow.webContents.openDevTools();
+  // Open DevTools for debugging (disabled)
+  // mainWindow.webContents.openDevTools();
 
   log.info('Main window created successfully');
 }
 
 function isLinxTracePath(p: string): boolean {
-  return p.endsWith('.linxtrace.jsonl');
+  return p.endsWith('.linxtrace');
 }
 
-function deriveMetaPathFromTrace(tracePath: string): string {
-  if (tracePath.endsWith('.linxtrace.jsonl')) {
-    return tracePath.replace(/\.linxtrace\.jsonl$/, '.linxtrace.meta.json');
+function assertCanonicalLinxTracePath(normalized: string): void {
+  if (normalized.endsWith('.gz')) {
+    throw new Error(`unsupported trace artifact: ${normalized} (compressed traces are disabled; regenerate as *.linxtrace)`);
   }
-  if (tracePath.endsWith('.linxtrace.meta.json')) {
-    return tracePath;
+  if (normalized.endsWith('.linxtrace.jsonl') || normalized.endsWith('.linxtrace.meta.json') || normalized.endsWith('.jsonl') || normalized.endsWith('.meta.json')) {
+    throw new Error(`unsupported legacy trace artifact: ${normalized} (expected single-file *.linxtrace with in-band META)`);
   }
-  return `${tracePath}.meta.json`;
+  if (!isLinxTracePath(normalized)) {
+    throw new Error(`unsupported trace extension: ${normalized} (expected *.linxtrace)`);
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readNextLine(fd: number, startOffset: number): { nextOffset: number; line: string; found: boolean } {
+  const readBuf = Buffer.allocUnsafe(TRACE_META_READER_CHUNK_SIZE);
+  const parts: Buffer[] = [];
+  let partsLen = 0;
+  let offset = startOffset;
+
+  while (true) {
+    const n = fs.readSync(fd, readBuf, 0, TRACE_META_READER_CHUNK_SIZE, offset);
+    if (n <= 0) {
+      if (partsLen === 0) {
+        return { nextOffset: offset, line: '', found: false };
+      }
+      const line = Buffer.concat(parts, partsLen).toString('utf8');
+      return { nextOffset: offset, line, found: true };
+    }
+
+    const chunk = readBuf.subarray(0, n);
+    let cursor = 0;
+    while (cursor < n) {
+      const nl = chunk.indexOf('\n', cursor);
+      if (nl < 0) {
+        const tail = chunk.subarray(cursor, n);
+        if (tail.length > 0) {
+          parts.push(Buffer.from(tail));
+          partsLen += tail.length;
+        }
+        offset += tail.length;
+        break;
+      }
+
+      if (nl > cursor) {
+        const linePart = chunk.subarray(cursor, nl);
+        parts.push(Buffer.from(linePart));
+        partsLen += linePart.length;
+      }
+
+      const line = partsLen > 0 ? Buffer.concat(parts, partsLen).toString('utf8') : '';
+      if (line.trim().length > 0) {
+        return { nextOffset: offset + nl + 1, line: line.trim(), found: true };
+      }
+
+      parts.length = 0;
+      partsLen = 0;
+      cursor = nl + 1;
+      offset = offset + nl + 1;
+      if (cursor >= n) {
+        break;
+      }
+    }
+  }
+}
+
+function isTransientMetaParseError(message: string): boolean {
+  return /Unexpected end of JSON input|Unexpected token|unterminated string/i.test(message);
+}
+
+async function readFirstRecordFromTrace(
+  fd: number,
+  normalized: string,
+): Promise<{ text: string; found: boolean; rec?: Record<string, unknown> }> {
+  let offset = 0;
+  while (true) {
+    for (let attempt = 1; attempt <= TRACE_META_READER_RETRIES; attempt += 1) {
+      const { nextOffset, line, found } = readNextLine(fd, offset);
+      log.debug('trace:readMeta line probe', {
+        tracePath: normalized,
+        attempt,
+        offset,
+        nextOffset,
+        found,
+      });
+      if (!found) {
+        if (attempt < TRACE_META_READER_RETRIES) {
+          await delay(TRACE_META_READER_RETRY_MS);
+          offset = Math.max(offset, nextOffset);
+          continue;
+        }
+        return { text: '', found: false };
+      }
+
+      const trimmed = line.trim();
+      if (!trimmed) {
+        offset = nextOffset;
+        break;
+      }
+
+      try {
+        const rec = JSON.parse(trimmed);
+        if (!rec || typeof rec !== 'object') {
+          throw new Error('first record is not an object');
+        }
+        return { text: trimmed, found: true, rec };
+      } catch (error: any) {
+        const parseMessage = String(error?.message || error);
+        if (attempt < TRACE_META_READER_RETRIES && isTransientMetaParseError(parseMessage)) {
+          log.warn('trace:readMeta transient JSON parse while reading META; retrying', {
+            tracePath: normalized,
+            attempt,
+            parseMessage,
+          });
+          await delay(TRACE_META_READER_RETRY_MS * attempt);
+          continue;
+        }
+        throw error;
+      }
+
+      return { text: trimmed, found: true };
+    }
+    return { text: '', found: false };
+  }
+}
+
+async function readTraceMetaFromFilePath(normalized: string): Promise<{ json: Record<string, unknown>; text: string }> {
+  assertCanonicalLinxTracePath(normalized);
+  const fd = fs.openSync(normalized, 'r');
+  try {
+    const { text, found, rec } = await readFirstRecordFromTrace(fd, normalized);
+    if (!found) {
+      throw new Error(`missing META record in trace: ${normalized}`);
+    }
+    if (!rec || rec.type !== 'META') {
+      throw new Error(`first non-empty record is not META: ${normalized}`);
+    }
+    const metaObj = { ...rec } as Record<string, unknown>;
+    delete metaObj.type;
+    return { json: metaObj, text };
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function closeTraceSession(sessionId: number): boolean {
@@ -358,7 +570,11 @@ function closeTraceSession(sessionId: number): boolean {
 
 function requestOpenTrace(pathToOpen: string) {
   const normalized = path.resolve(pathToOpen);
-  if (!fs.existsSync(normalized) || !isLinxTracePath(normalized)) {
+  if (!fs.existsSync(normalized)) {
+    return;
+  }
+  if (!isLinxTracePath(normalized)) {
+    log.warn('Ignoring unsupported trace argument', { tracePath: normalized });
     return;
   }
   if (mainWindow && mainWindowReady) {
@@ -373,7 +589,7 @@ app.whenReady().then(() => {
   log.info('App ready');
   createWindow();
 
-  const argTrace = process.argv.find((arg) => typeof arg === 'string' && arg.endsWith('.linxtrace.jsonl'));
+  const argTrace = process.argv.find((arg) => typeof arg === 'string' && arg.endsWith('.linxtrace'));
   if (argTrace) {
     requestOpenTrace(argTrace);
   }
@@ -453,9 +669,17 @@ ipcMain.handle('fs:readFile', async (_, filePath: string) => {
 
 ipcMain.handle('trace:readMeta', async (_, tracePath: string) => {
   try {
-    const metaPath = deriveMetaPathFromTrace(path.resolve(tracePath));
-    const metaJson = fs.readFileSync(metaPath, 'utf-8');
-    return { ok: true, metaPath, metaJson };
+    const normalized = path.resolve(tracePath);
+    assertCanonicalLinxTracePath(normalized);
+    const startedAt = Date.now();
+    const { json: metaObj, text: firstRecord } = await readTraceMetaFromFilePath(normalized);
+    log.info('trace:readMeta parsed first record', {
+      tracePath: normalized,
+      len: firstRecord.length,
+      first: firstRecord.slice(0, 60),
+      elapsedMs: Date.now() - startedAt,
+    });
+    return { ok: true, metaPath: normalized, meta: metaObj };
   } catch (error: any) {
     return { ok: false, error: error.message || String(error) };
   }
@@ -464,6 +688,7 @@ ipcMain.handle('trace:readMeta', async (_, tracePath: string) => {
 ipcMain.handle('trace:openSession', async (_, tracePath: string) => {
   try {
     const normalized = path.resolve(tracePath);
+    assertCanonicalLinxTracePath(normalized);
     const st = fs.statSync(normalized);
     if (!st.isFile()) {
       return { ok: false, error: 'trace path is not a file' };
@@ -517,6 +742,18 @@ ipcMain.handle(
 
 ipcMain.handle('trace:closeSession', async (_, sessionId: number) => {
   return { ok: closeTraceSession(Number(sessionId)) };
+});
+
+ipcMain.handle('debug:uiSnapshot', async (_event, reason?: string) => {
+  if (!uiSnapshotHook) {
+    return { ok: false, error: 'snapshot hook unavailable' };
+  }
+  try {
+    await uiSnapshotHook(`ipc:${String(reason || 'manual')}`);
+    return { ok: true };
+  } catch (error: any) {
+    return { ok: false, error: error?.message || String(error) };
+  }
 });
 
 ipcMain.handle('fs:writeFile', async (_, filePath: string, content: string) => {

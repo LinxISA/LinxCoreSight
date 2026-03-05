@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <!-- Pipeline stage gradients -->
+    <linearGradient id="stageGrad1" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00d9ff" />
+      <stop offset="100%" stop-color="#0099cc" />
+    </linearGradient>
+    <linearGradient id="stageGrad2" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#a855f7" />
+      <stop offset="100%" stop-color="#7c3aed" />
+    </linearGradient>
+    <linearGradient id="stageGrad3" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00ff88" />
+      <stop offset="100%" stop-color="#00cc66" />
+    </linearGradient>
+    <linearGradient id="stageGrad4" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#fbbf24" />
+      <stop offset="100%" stop-color="#f59e0b" />
+    </linearGradient>
+    <!-- Glow filter -->
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="1" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect x="4" width="56" height="56" rx="8" y="4" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
+
+  <!-- Pipeline stages as horizontal bars -->
+  <g filter="url(#glow)">
+    <!-- Stage 1: Fetch -->
+    <rect x="10" y="14" width="44" height="6" rx="2" fill="url(#stageGrad1)" opacity="0.9"/>
+    <!-- Stage 2: Decode -->
+    <rect x="10" y="23" width="44" height="6" rx="2" fill="url(#stageGrad2)" opacity="0.9"/>
+    <!-- Stage 3: Execute -->
+    <rect x="10" y="32" width="44" height="6" rx="2" fill="url(#stageGrad3)" opacity="0.9"/>
+    <!-- Stage 4: Memory -->
+    <rect x="10" y="41" width="44" height="6" rx="2" fill="url(#stageGrad4)" opacity="0.9"/>
+  </g>
+
+  <!-- Circuit traces connecting stages (vertical) -->
+  <g stroke="#30363d" stroke-width="1.5" stroke-linecap="round">
+    <line x1="14" y1="20" x2="14" y2="23"/>
+    <line x1="14" y1="29" x2="14" y2="32"/>
+    <line x1="14" y1="38" x2="14" y2="41"/>
+    <line x1="50" y1="20" x2="50" y2="23"/>
+    <line x1="50" y1="29" x2="50" y2="32"/>
+    <line x1="50" y1="38" x2="50" y2="41"/>
+  </g>
+
+  <!-- Flow indicators (arrows) -->
+  <g fill="#00ff88" opacity="0.8">
+    <!-- Fetch to Decode -->
+    <path d="M14 21.5 L12 23 L14 24.5" stroke="#00ff88" stroke-width="1" fill="none"/>
+    <!-- Decode to Execute -->
+    <path d="M14 30.5 L12 32 L14 33.5" stroke="#00ff88" stroke-width="1" fill="none"/>
+    <!-- Execute to Memory -->
+    <path d="M14 39.5 L12 41 L14 42.5" stroke="#00ff88" stroke-width="1" fill="none"/>
+  </g>
+
+  <!-- Janus symbol at top (dual-direction) -->
+  <g>
+    <!-- Left arrow (past/fetch direction) -->
+    <path d="M24 10 L20 8 L20 12 Z" fill="#00d9ff"/>
+    <!-- Right arrow (future/commit direction) -->
+    <path d="M40 10 L44 8 L44 12 Z" fill="#fbbf24"/>
+  </g>
+
+  <!-- Connection nodes on sides -->
+  <g fill="#00d9ff">
+    <circle cx="8" cy="17" r="2"/>
+    <circle cx="8" cy="26" r="2"/>
+    <circle cx="8" cy="35" r="2"/>
+    <circle cx="8" cy="44" r="2"/>
+  </g>
+  <g fill="#fbbf24">
+    <circle cx="56" cy="17" r="2"/>
+    <circle cx="56" cy="26" r="2"/>
+    <circle cx="56" cy="35" r="2"/>
+    <circle cx="56" cy="44" r="2"/>
+  </g>
+</svg>

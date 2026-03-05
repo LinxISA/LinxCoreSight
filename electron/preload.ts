@@ -51,6 +51,10 @@ export interface ProcessResult {
   exitCode: number;
 }
 
+export interface TraceMeta {
+  [key: string]: unknown;
+}
+
 // Expose protected methods that allow the renderer process to use
 // ipcRenderer without exposing the entire object
 contextBridge.exposeInMainWorld('electronAPI', {
@@ -69,7 +73,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('fs:readFile', filePath) as Promise<{ success: boolean; content?: string; error?: string }>,
 
   traceReadMeta: (tracePath: string) =>
-    ipcRenderer.invoke('trace:readMeta', tracePath) as Promise<{ ok: boolean; metaPath?: string; metaJson?: string; error?: string }>,
+    ipcRenderer.invoke('trace:readMeta', tracePath) as Promise<{ ok: boolean; metaPath?: string; meta?: TraceMeta; metaJson?: string; error?: string }>,
 
   traceOpenSession: (tracePath: string) =>
     ipcRenderer.invoke('trace:openSession', tracePath) as Promise<{ ok: boolean; sessionId?: number; sizeBytes?: number; mtimeMs?: number; error?: string }>,
@@ -79,6 +83,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   traceCloseSession: (sessionId: number) =>
     ipcRenderer.invoke('trace:closeSession', sessionId) as Promise<{ ok: boolean }>,
+
+  requestUiSnapshot: (reason?: string) =>
+    ipcRenderer.invoke('debug:uiSnapshot', reason) as Promise<{ ok: boolean; error?: string }>,
   
   writeFile: (filePath: string, content: string) =>
     ipcRenderer.invoke('fs:writeFile', filePath, content) as Promise<FSResult>,

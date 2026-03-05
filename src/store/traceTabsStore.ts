@@ -7,6 +7,7 @@ export type TraceViewState = {
   offsetX: number;
   zoom: number;
   leftPaneWidth: number;
+  leftPaneFolded: boolean;
   hideFlushed: boolean;
 };
 
@@ -16,6 +17,10 @@ export type TraceTabState = {
   title: string;
   status: TraceTabStatus;
   error?: string;
+  assemblyMap?: Record<string, string>;
+  assemblyLoading?: boolean;
+  assemblyError?: string;
+  assemblySource?: string;
   summary?: LinxTraceSessionSummary;
   viewState: TraceViewState;
   workerHandle?: LinxTraceSession;
@@ -26,6 +31,7 @@ export const DEFAULT_TRACE_VIEW_STATE: TraceViewState = {
   offsetX: 0,
   zoom: 1.0,
   leftPaneWidth: 460,
+  leftPaneFolded: false,
   hideFlushed: false,
 };
 

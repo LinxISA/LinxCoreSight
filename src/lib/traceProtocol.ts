@@ -27,14 +27,21 @@ export type ViewportQueryRequest = {
 
 export type ViewportRow = {
   rowId: number;
+  rowSid: string;
   rowKind: string;
+  entityKind: string;
+  lifecycleFlags: string[];
+  orderKey: string;
   coreId: number;
   blockUid: string;
   uopUid: string;
+  blockBid?: string;
+  seq?: number | null;
   leftLabel: string;
   detailLabel: string;
   retireCycle: number;
   retireStatus: string;
+  virtualRowCount?: number;
 };
 
 export type ViewportEvent = {
@@ -44,6 +51,8 @@ export type ViewportEvent = {
   laneId: string;
   stall: number;
   cause: string;
+  virtualSlot?: number;
+  virtualSlotCount?: number;
 };
 
 export type ViewportQueryResponse = {
@@ -63,4 +72,3 @@ export type TabSuspendRequest = {
 export type TabResumeRequest = {
   reason: string;
 };
-

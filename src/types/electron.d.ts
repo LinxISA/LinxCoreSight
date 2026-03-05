@@ -70,10 +70,11 @@ export interface ElectronAPI {
 
   // File System
   readFile: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
-  traceReadMeta: (tracePath: string) => Promise<{ ok: boolean; metaPath?: string; metaJson?: string; error?: string }>;
+  traceReadMeta: (tracePath: string) => Promise<{ ok: boolean; metaPath?: string; meta?: Record<string, unknown>; metaJson?: string; error?: string }>;
   traceOpenSession: (tracePath: string) => Promise<{ ok: boolean; sessionId?: number; sizeBytes?: number; mtimeMs?: number; error?: string }>;
   traceReadChunk: (sessionId: number, offset: number, bytes: number) => Promise<{ ok: boolean; chunk?: string; nextOffset?: number; eof?: boolean; error?: string }>;
   traceCloseSession: (sessionId: number) => Promise<{ ok: boolean }>;
+  requestUiSnapshot: (reason?: string) => Promise<{ ok: boolean; error?: string }>;
   writeFile: (filePath: string, content: string) => Promise<FSResult>;
   readDir: (dirPath: string) => Promise<{ success: boolean; files?: FileEntry[]; error?: string }>;
   stat: (filePath: string) => Promise<{ success: boolean; stats?: FileStats; error?: string }>;
