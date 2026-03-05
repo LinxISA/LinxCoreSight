@@ -82,7 +82,7 @@ export function StatusBar() {
         {/* Branding */}
         <div className="flex items-center gap-1.5 text-janus-accent-cyan">
           <img 
-            src="/linxcoresight-icon.svg" 
+            src="/janus-god-icon.svg" 
             alt="LinxCoreSight" 
             className="w-4 h-4"
           />

@@ -18,10 +18,10 @@ export function TraceTabsBar(props: TraceTabsBarProps): JSX.Element {
       style={{
         display: 'flex',
         alignItems: 'center',
-        gap: 4,
+        gap: 2,
         borderBottom: `1px solid ${theme.toolbarBorder}`,
         background: theme.toolbarBg,
-        padding: '4px 8px',
+        padding: '2px 4px',
         overflowX: 'auto',
       }}
     >
@@ -44,7 +44,7 @@ export function TraceTabsBar(props: TraceTabsBarProps): JSX.Element {
               border: `1px solid ${active ? theme.leftPaneText : theme.toolbarBorder}`,
               background: active ? theme.leftPaneBg : theme.toolbarBg,
               color: theme.leftPaneText,
-              borderRadius: 4,
+              borderRadius: 3,
             }}
           >
             <button
@@ -54,7 +54,7 @@ export function TraceTabsBar(props: TraceTabsBarProps): JSX.Element {
                 border: 'none',
                 background: 'transparent',
                 color: 'inherit',
-                padding: '5px 8px',
+                padding: '4px 6px',
                 cursor: 'pointer',
                 textAlign: 'left',
                 maxWidth: 320,
@@ -77,8 +77,8 @@ export function TraceTabsBar(props: TraceTabsBarProps): JSX.Element {
                 borderLeft: `1px solid ${theme.toolbarBorder}`,
                 background: 'transparent',
                 color: theme.leftPaneText,
-                width: 24,
-                height: 24,
+                width: 20,
+                height: 20,
                 cursor: 'pointer',
               }}
               title="Close tab"
@@ -93,13 +93,13 @@ export function TraceTabsBar(props: TraceTabsBarProps): JSX.Element {
         type="button"
         onClick={onOpenTrace}
         style={{
-          marginLeft: tabs.length > 0 ? 4 : 0,
-          padding: '4px 8px',
+          marginLeft: tabs.length > 0 ? 2 : 0,
+          padding: '3px 7px',
           border: `1px solid ${theme.toolbarBorder}`,
           background: theme.leftPaneBg,
           color: theme.leftPaneText,
           cursor: 'pointer',
-          borderRadius: 4,
+          borderRadius: 3,
           fontSize: 12,
         }}
       >

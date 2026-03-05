@@ -9,12 +9,18 @@ if (process.argv.length < 4) {
   process.exit(2);
 }
 
-const cli = path.resolve(__dirname, 'trace_lint.js');
+const lintCli = path.resolve(__dirname, 'trace_lint.js');
+const traceCli = path.resolve(__dirname, 'linxtrace_cli.js');
 for (const tracePath of process.argv.slice(2)) {
-  const out = spawnSync('node', [cli, tracePath], { stdio: 'inherit' });
-  if (out.status !== 0) {
-    process.exit(out.status || 1);
+  for (const args of [
+    [lintCli, tracePath],
+    [traceCli, 'first-failure', tracePath],
+    [traceCli, 'render-check', tracePath],
+  ]) {
+    const out = spawnSync('node', args, { stdio: 'inherit' });
+    if (out.status !== 0) {
+      process.exit(out.status || 1);
+    }
   }
 }
 console.log(`smoke-tabs-ok count=${process.argv.length - 2}`);
-

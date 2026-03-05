@@ -13,11 +13,10 @@ function run(args) {
 }
 
 if (process.argv.length < 3) {
-  console.error('usage: node scripts/trace_lint.js <trace.linxtrace.jsonl> [--meta <meta.json>]');
+  console.error('usage: node scripts/trace_lint.js <trace.linxtrace>');
   process.exit(2);
 }
 
 const args = process.argv.slice(2);
 run(['schema-check', ...args]);
 run(['lint', ...args]);
-

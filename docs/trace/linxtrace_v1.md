@@ -4,8 +4,8 @@ LinxCoreSight consumes LinxTrace v1 emitted by LinxCore tools.
 
 ## Required Inputs
 
-- `*.linxtrace.jsonl` (event stream)
-- `*.linxtrace.meta.json` (schema sidecar)
+- `*.linxtrace` (single file)
+- First non-empty line must be `{"type":"META", ...}`
 
 ## Strict Validation
 

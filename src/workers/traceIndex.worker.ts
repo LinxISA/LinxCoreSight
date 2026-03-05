@@ -12,12 +12,22 @@ type LinxTraceLane = {
 
 type LinxTraceRowCatalog = {
   row_id: number;
+  row_sid?: string;  // Optional - new format uses uop_uid instead
+  uop_uid?: string; // New format uses this instead of row_sid
   row_kind: string;
-  core_id: number;
-  block_uid: string;
-  uop_uid: string;
-  left_label: string;
-  detail_defaults: string;
+  entity_kind?: string;
+  lifecycle_flags?: string[];
+  order_key?: string;
+  id_refs?: {
+    seq?: number | null;
+    uop_uid: string;
+    block_uid: string;
+    block_bid: string;
+  };
+  core_id?: number;
+  block_uid?: string;
+  left_label?: string;
+  detail_defaults?: string;
 };
 
 type LinxTraceMeta = {
@@ -55,6 +65,15 @@ type WorkerQueryMessage = {
 
 type WorkerMessage = WorkerInitMessage | WorkerChunkMessage | WorkerQueryMessage;
 
+type ChunkAckMessage = {
+  type: 'chunkAck';
+  ok: boolean;
+  eof: boolean;
+  lineNo: number;
+  occCount: number;
+  error?: string;
+};
+
 type RetireRecord = {
   cycle: number;
   status: string;
@@ -62,10 +81,16 @@ type RetireRecord = {
 
 type RowMutable = {
   rowId: number;
+  rowSid: string;
   rowKind: string;
+  entityKind: string;
+  lifecycleFlags: string[];
+  orderKey: string;
   coreId: number;
   blockUid: string;
   uopUid: string;
+  blockBid: string;
+  seq: number | null;
   leftLabel: string;
   detailLabel: string;
   retire?: RetireRecord;
@@ -81,6 +106,8 @@ type RowMutable = {
   occLaneArr?: Uint16Array;
   occStallArr?: Uint8Array;
   occCauseArr?: Uint32Array;
+  minCycle?: number;
+  maxCycle?: number;
 };
 
 const workerScope: any = self as any;
@@ -102,8 +129,12 @@ let maxCycle = Number.NEGATIVE_INFINITY;
 let ready = false;
 let allOrder: number[] = [];
 let noFlushOrder: number[] = [];
+let chunkQueue: WorkerChunkMessage[] = [];
+let chunkProcessing = false;
+let sawEof = false;
 
 function postError(error: string): void {
+  console.error('[TraceWorker] Error:', error);
   workerScope.postMessage({ type: 'error', error });
 }
 
@@ -163,6 +194,9 @@ function resetState(): void {
   ready = false;
   allOrder = [];
   noFlushOrder = [];
+  chunkQueue = [];
+  chunkProcessing = false;
+  sawEof = false;
 }
 
 function initState(meta: LinxTraceMeta): void {
@@ -174,12 +208,20 @@ function initState(meta: LinxTraceMeta): void {
   laneIds.forEach((id, idx) => laneIndex.set(id, idx));
 
   rows = meta.row_catalog.map((row) => {
+    // Support both row_sid (legacy) and uop_uid (new format)
+    const rowSid = String(row.row_sid || row.uop_uid || '');
     const obj: RowMutable = {
       rowId: Number(row.row_id),
+      rowSid,
       rowKind: String(row.row_kind || 'uop'),
+      entityKind: String(row.entity_kind || row.row_kind || 'uop'),
+      lifecycleFlags: Array.isArray(row.lifecycle_flags) ? row.lifecycle_flags.map((v) => String(v)) : [],
+      orderKey: String(row.order_key || ''),
       coreId: Number(row.core_id || 0),
       blockUid: String(row.block_uid || '0x0'),
-      uopUid: String(row.uop_uid || '0x0'),
+      uopUid: String(row.uop_uid || rowSid || '0x0'),
+      blockBid: String((row.id_refs && row.id_refs.block_bid) || '0x0'),
+      seq: row.id_refs && row.id_refs.seq !== undefined && row.id_refs.seq !== null ? Number(row.id_refs.seq) : null,
       leftLabel: String(row.left_label || ''),
       detailLabel: String(row.detail_defaults || ''),
       occCycle: [],
@@ -200,6 +242,9 @@ function parseRecord(rec: Record<string, unknown>, where: string): void {
   if (!typ) {
     throw new Error(`${where}: missing record type`);
   }
+  if (typ === 'META') {
+    return;
+  }
   if (typ === 'BLOCK_EVT' || typ === 'DEP') {
     return;
   }
@@ -210,6 +255,12 @@ function parseRecord(rec: Record<string, unknown>, where: string): void {
   const row = rowById.get(rowId);
   if (!row) {
     throw new Error(`${where}: unknown row_id=${rowId}`);
+  }
+  // Support both row_sid (legacy) and derive from uop_uid in OP_DEF (new format)
+  // The new format uses uop_uid in OP_DEF instead of row_sid
+  const recRowSid = String(rec.row_sid || '');
+  if (recRowSid && recRowSid !== row.rowSid && row.rowSid) {
+    throw new Error(`${where}: row_sid mismatch for row_id=${rowId}: got=${recRowSid} exp=${row.rowSid}`);
   }
 
   if (typ === 'LABEL') {
@@ -263,6 +314,14 @@ function parseRecord(rec: Record<string, unknown>, where: string): void {
       row.nonMonotonic = true;
     }
     row.lastOccCycle = cycle;
+    
+    // Track per-row min/max cycles for spatial queries
+    if (row.minCycle === undefined || cycle < row.minCycle) {
+      row.minCycle = cycle;
+    }
+    if (row.maxCycle === undefined || cycle > row.maxCycle) {
+      row.maxCycle = cycle;
+    }
 
     occCount += 1;
     minCycle = Math.min(minCycle, cycle);
@@ -277,65 +336,183 @@ function parseRecord(rec: Record<string, unknown>, where: string): void {
   throw new Error(`${where}: unknown event type ${typ}`);
 }
 
-function parseChunk(chunk: string, eof: boolean): void {
-  if (!chunk && !eof) return;
-  const text = parseCarry + (chunk || '');
-  const lines = text.split('\n');
-  parseCarry = eof ? '' : lines.pop() || '';
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    parseLineNo += 1;
-    if (!line) continue;
-    let rec: Record<string, unknown>;
-    try {
-      rec = JSON.parse(line) as Record<string, unknown>;
-    } catch (error) {
-      throw new Error(`trace:${parseLineNo}: invalid JSON (${String(error)})`);
+function parseChunk(chunk: string, eof: boolean): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (!chunk && !eof) {
+      resolve();
+      return;
     }
-    parseRecord(rec, `trace:${parseLineNo}`);
-  }
+    const text = parseCarry + (chunk || '');
+    const lines = text.split('\n');
+    parseCarry = eof ? '' : lines.pop() || '';
 
-  if (eof && parseCarry.trim().length > 0) {
-    parseLineNo += 1;
-    let rec: Record<string, unknown>;
-    try {
-      rec = JSON.parse(parseCarry.trim()) as Record<string, unknown>;
-    } catch (error) {
-      throw new Error(`trace:${parseLineNo}: invalid JSON (${String(error)})`);
-    }
-    parseRecord(rec, `trace:${parseLineNo}`);
-    parseCarry = '';
-  }
+    // Process in batches to avoid blocking the thread
+    const BATCH_SIZE = 5000;
+    let lineIndex = 0;
+
+    const processBatch = () => {
+      const batchEnd = Math.min(lineIndex + BATCH_SIZE, lines.length);
+
+      try {
+        for (; lineIndex < batchEnd; lineIndex++) {
+          const rawLine = lines[lineIndex];
+          const line = rawLine.trim();
+          parseLineNo += 1;
+          if (!line) continue;
+          let rec: Record<string, unknown>;
+          try {
+            rec = JSON.parse(line) as Record<string, unknown>;
+          } catch (error) {
+            throw new Error(`trace:${parseLineNo}: invalid JSON (${String(error)})`);
+          }
+          parseRecord(rec, `trace:${parseLineNo}`);
+        }
+
+        // If not done, schedule next batch
+        if (lineIndex < lines.length) {
+          workerScope.postMessage({ type: 'progress', lineNo: parseLineNo, occCount });
+          setTimeout(processBatch, 0);
+          return;
+        }
+
+        // Handle remaining carry
+        if (eof && parseCarry.trim().length > 0) {
+          parseLineNo += 1;
+          let rec: Record<string, unknown>;
+          try {
+            rec = JSON.parse(parseCarry.trim()) as Record<string, unknown>;
+          } catch (error) {
+            throw new Error(`trace:${parseLineNo}: invalid JSON (${String(error)})`);
+          }
+          parseRecord(rec, `trace:${parseLineNo}`);
+          parseCarry = '';
+        }
+        resolve();
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+
+    processBatch();
+  });
 }
 
-function finalizeIndexes(): void {
-  for (const row of rows) {
-    if (row.nonMonotonic && row.occCycle.length > 1) {
-      const idx = row.occCycle.map((_, i) => i);
-      idx.sort((a, b) => row.occCycle[a] - row.occCycle[b]);
-      row.occCycle = idx.map((i) => row.occCycle[i]);
-      row.occStage = idx.map((i) => row.occStage[i]);
-      row.occLane = idx.map((i) => row.occLane[i]);
-      row.occStall = idx.map((i) => row.occStall[i]);
-      row.occCause = idx.map((i) => row.occCause[i]);
+function finalizeIndexes(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const BATCH_SIZE = 1000;
+    let rowIndex = 0;
+
+    const processBatch = () => {
+      try {
+        const batchEnd = Math.min(rowIndex + BATCH_SIZE, rows.length);
+
+        for (; rowIndex < batchEnd; rowIndex++) {
+          const row = rows[rowIndex];
+          if (row.nonMonotonic && row.occCycle.length > 1) {
+            const idx = row.occCycle.map((_, i) => i);
+            idx.sort((a, b) => row.occCycle[a] - row.occCycle[b]);
+            row.occCycle = idx.map((i) => row.occCycle[i]);
+            row.occStage = idx.map((i) => row.occStage[i]);
+            row.occLane = idx.map((i) => row.occLane[i]);
+            row.occStall = idx.map((i) => row.occStall[i]);
+            row.occCause = idx.map((i) => row.occCause[i]);
+          }
+          row.occCycleArr = Int32Array.from(row.occCycle);
+          row.occStageArr = Uint16Array.from(row.occStage);
+          row.occLaneArr = Uint16Array.from(row.occLane);
+          row.occStallArr = Uint8Array.from(row.occStall);
+          row.occCauseArr = Uint32Array.from(row.occCause);
+          row.occCycle = [];
+          row.occStage = [];
+          row.occLane = [];
+          row.occStall = [];
+          row.occCause = [];
+        }
+
+        if (rowIndex < rows.length) {
+          workerScope.postMessage({ type: 'progress', lineNo: parseLineNo, occCount });
+          setTimeout(processBatch, 0);
+          return;
+        }
+
+        allOrder = rows.flatMap((row, idx) =>
+          row.occCycleArr && row.occCycleArr.length > 0 ? [idx] : [],
+        );
+        noFlushOrder = rows.flatMap((row, idx) =>
+          rowVisibleInNoFlush(row) && row.occCycleArr && row.occCycleArr.length > 0 ? [idx] : [],
+        );
+        resolve();
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+
+    processBatch();
+  });
+}
+
+async function processChunkQueue(): Promise<void> {
+  if (chunkProcessing) return;
+  chunkProcessing = true;
+  try {
+    while (chunkQueue.length > 0) {
+      const msg = chunkQueue.shift()!;
+      if (sawEof) {
+        const ack: ChunkAckMessage = {
+          type: 'chunkAck',
+          ok: false,
+          eof: msg.eof,
+          lineNo: parseLineNo,
+          occCount,
+          error: 'received chunk after EOF',
+        };
+        workerScope.postMessage(ack);
+        continue;
+      }
+      await parseChunk(msg.chunk || '', msg.eof === true);
+      if (msg.eof === true) {
+        sawEof = true;
+        await finalizeIndexes();
+        ready = true;
+        workerScope.postMessage({
+          type: 'ready',
+          ok: true,
+          totalRows: rows.length,
+          occCount,
+          minCycle: Number.isFinite(minCycle) ? minCycle : 0,
+          maxCycle: Number.isFinite(maxCycle) ? maxCycle : 0,
+        });
+      } else {
+        workerScope.postMessage({ type: 'progress', lineNo: parseLineNo, occCount });
+      }
+      const ack: ChunkAckMessage = {
+        type: 'chunkAck',
+        ok: true,
+        eof: msg.eof,
+        lineNo: parseLineNo,
+        occCount,
+      };
+      workerScope.postMessage(ack);
     }
-    row.occCycleArr = Int32Array.from(row.occCycle);
-    row.occStageArr = Uint16Array.from(row.occStage);
-    row.occLaneArr = Uint16Array.from(row.occLane);
-    row.occStallArr = Uint8Array.from(row.occStall);
-    row.occCauseArr = Uint32Array.from(row.occCause);
-    row.occCycle = [];
-    row.occStage = [];
-    row.occLane = [];
-    row.occStall = [];
-    row.occCause = [];
+  } catch (error) {
+    const errMsg = String(error);
+    postError(errMsg);
+    const ack: ChunkAckMessage = {
+      type: 'chunkAck',
+      ok: false,
+      eof: false,
+      lineNo: parseLineNo,
+      occCount,
+      error: errMsg,
+    };
+    workerScope.postMessage(ack);
+  } finally {
+    chunkProcessing = false;
   }
-  allOrder = rows.map((_, idx) => idx);
-  noFlushOrder = rows.flatMap((row, idx) => (rowVisibleInNoFlush(row) ? [idx] : []));
 }
 
 function onQuery(msg: WorkerQueryMessage): void {
+  // console.log('[TraceWorker] Query:', { rowStart: msg.rowStart, rowEnd: msg.rowEnd, cycleStart: msg.cycleStart, cycleEnd: msg.cycleEnd, hideFlushed: msg.hideFlushed });
   if (!ready) {
     workerScope.postMessage({
       type: 'queryResult',
@@ -359,18 +536,63 @@ function onQuery(msg: WorkerQueryMessage): void {
   const maxEvents = Math.max(1, Number(msg.maxEvents || 200000));
 
   const viewportRows = [];
-  const events = [];
+  const events: {
+    rowId: number;
+    cycle: number;
+    stageId: string;
+    laneId: string;
+    stall: number;
+    cause: string;
+    virtualSlot?: number;
+    virtualSlotCount?: number;
+  }[] = [];
   let truncated = false;
+
+  // Pre-compute bounds check outside loop
+  const cycleStartNum = cycleStart;
+  const cycleEndNum = cycleEnd;
 
   for (let vis = rowStart; vis < rowEnd; vis += 1) {
     const actual = order[vis];
     const row = rows[actual];
+    
+    // Skip rows that have no events in the visible cycle range
+    if (row.minCycle !== undefined && row.maxCycle !== undefined) {
+      if (row.maxCycle < cycleStartNum || row.minCycle > cycleEndNum) {
+        // Still add row metadata for empty rows in viewport
+        viewportRows.push({
+          rowId: row.rowId,
+          rowSid: row.rowSid,
+          rowKind: row.rowKind,
+          entityKind: row.entityKind,
+          lifecycleFlags: row.lifecycleFlags,
+          orderKey: row.orderKey,
+          coreId: row.coreId,
+          blockUid: row.blockUid,
+          uopUid: row.uopUid,
+          blockBid: row.blockBid,
+          seq: row.seq,
+          leftLabel: row.leftLabel,
+          detailLabel: row.detailLabel,
+          retireCycle: row.retire ? row.retire.cycle : -1,
+          retireStatus: row.retire ? row.retire.status : '',
+        });
+        continue;
+      }
+    }
+
     viewportRows.push({
       rowId: row.rowId,
+      rowSid: row.rowSid,
       rowKind: row.rowKind,
+      entityKind: row.entityKind,
+      lifecycleFlags: row.lifecycleFlags,
+      orderKey: row.orderKey,
       coreId: row.coreId,
       blockUid: row.blockUid,
       uopUid: row.uopUid,
+      blockBid: row.blockBid,
+      seq: row.seq,
       leftLabel: row.leftLabel,
       detailLabel: row.detailLabel,
       retireCycle: row.retire ? row.retire.cycle : -1,
@@ -386,8 +608,8 @@ function onQuery(msg: WorkerQueryMessage): void {
       continue;
     }
 
-    const beg = lowerBound(cycleArr, cycleStart);
-    const end = upperBound(cycleArr, cycleEnd);
+    const beg = lowerBound(cycleArr, cycleStartNum);
+    const end = upperBound(cycleArr, cycleEndNum);
     for (let i = beg; i < end; i += 1) {
       events.push({
         rowId: row.rowId,
@@ -405,7 +627,49 @@ function onQuery(msg: WorkerQueryMessage): void {
     if (truncated) break;
   }
 
+  // Sort only once at the end
   events.sort((a, b) => (a.cycle - b.cycle) || (a.rowId - b.rowId));
+
+  // Same-cycle multi-stage collisions are expanded with deterministic virtual slots.
+  const bucket = new Map<string, number[]>();
+  for (let i = 0; i < events.length; i += 1) {
+    const evt = events[i];
+    const key = `${evt.rowId}:${evt.cycle}`;
+    let arr = bucket.get(key);
+    if (!arr) {
+      arr = [];
+      bucket.set(key, arr);
+    }
+    arr.push(i);
+  }
+  const rowVirtualCount = new Map<number, number>();
+  for (const idxs of bucket.values()) {
+    idxs.sort((ia, ib) => {
+      const a = events[ia];
+      const b = events[ib];
+      const sa = stageIndex.get(a.stageId) ?? 0;
+      const sb = stageIndex.get(b.stageId) ?? 0;
+      if (sa !== sb) return sa - sb;
+      const la = laneIndex.get(a.laneId) ?? 0;
+      const lb = laneIndex.get(b.laneId) ?? 0;
+      if (la !== lb) return la - lb;
+      if (a.stall !== b.stall) return a.stall - b.stall;
+      return a.cause.localeCompare(b.cause);
+    });
+    const n = idxs.length;
+    for (let slot = 0; slot < n; slot += 1) {
+      const e = events[idxs[slot]];
+      e.virtualSlot = slot;
+      e.virtualSlotCount = n;
+      const prev = rowVirtualCount.get(e.rowId) || 1;
+      if (n > prev) {
+        rowVirtualCount.set(e.rowId, n);
+      }
+    }
+  }
+  for (const row of viewportRows) {
+    row.virtualRowCount = rowVirtualCount.get(row.rowId) || 1;
+  }
 
   workerScope.postMessage({
     type: 'queryResult',
@@ -430,21 +694,8 @@ workerScope.onmessage = (event: MessageEvent<WorkerMessage>) => {
       return;
     }
     if (msg.type === 'chunk') {
-      parseChunk(msg.chunk || '', msg.eof === true);
-      if (msg.eof === true) {
-        finalizeIndexes();
-        ready = true;
-        workerScope.postMessage({
-          type: 'ready',
-          ok: true,
-          totalRows: rows.length,
-          occCount,
-          minCycle: Number.isFinite(minCycle) ? minCycle : 0,
-          maxCycle: Number.isFinite(maxCycle) ? maxCycle : 0,
-        });
-      } else {
-        workerScope.postMessage({ type: 'progress', lineNo: parseLineNo, occCount });
-      }
+      chunkQueue.push(msg);
+      void processChunkQueue();
       return;
     }
     if (msg.type === 'query') {

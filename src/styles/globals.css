@@ -33,6 +33,10 @@ html, body, #root {
   overflow: hidden;
 }
 
+#root {
+  background-color: var(--janus-bg-primary);
+}
+
 body {
   font-family: 'Inter', system-ui, sans-serif;
   background-color: var(--janus-bg-primary);

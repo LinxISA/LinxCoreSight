@@ -1,4 +1,5 @@
 export type ThemeName = 'dark' | 'light';
+export type StagePaletteName = 'linxcore_default' | 'classic' | 'high_contrast';
 
 export type ThemeSpec = {
   baseBg: string;
@@ -26,6 +27,8 @@ export type ThemeSpec = {
   };
 };
 
+export type StagePalette = Record<string, string>;
+
 export type LabelToken = {
   text: string;
   color: string;
@@ -44,8 +47,8 @@ export const THEMES: Record<ThemeName, ThemeSpec> = {
     errorColor: '#ff4f4f',
     blockBoxColor: '#FFD54F',
     blockBoxFill: 'rgba(255,213,79,0.0)',
-    selectedRowFill: 'rgba(117,200,255,0.16)',
-    hoverBg: '#121620EE',
+    selectedRowFill: '#2E3A55',
+    hoverBg: '#121620',
     syntax: {
       default: '#e8ecff',
       address: '#9aa6c8',
@@ -69,8 +72,8 @@ export const THEMES: Record<ThemeName, ThemeSpec> = {
     errorColor: '#C40000',
     blockBoxColor: '#9C6A00',
     blockBoxFill: 'rgba(255,224,130,0.0)',
-    selectedRowFill: 'rgba(26,88,203,0.14)',
-    hoverBg: '#FFFFFFF2',
+    selectedRowFill: '#DCE8FF',
+    hoverBg: '#FFFFFF',
     syntax: {
       default: '#1b2230',
       address: '#6c768e',
@@ -83,6 +86,41 @@ export const THEMES: Record<ThemeName, ThemeSpec> = {
     },
   },
 };
+
+export const STAGE_PALETTES: Record<StagePaletteName, StagePalette> = {
+  linxcore_default: {
+    F0: '#5BC0EB', F1: '#5BC0EB', F2: '#5BC0EB', F3: '#5BC0EB', F4: '#5BC0EB', IB: '#4CC9F0',
+    D1: '#A78BFA', D2: '#A78BFA', D3: '#A78BFA', IQ: '#8B5CF6', S1: '#8B5CF6', S2: '#8B5CF6',
+    P1: '#34D399', I1: '#34D399', I2: '#34D399', E1: '#10B981', E2: '#10B981', E3: '#10B981', E4: '#10B981',
+    W1: '#22C55E', W2: '#22C55E',
+    LIQ: '#FBBF24', LHQ: '#FBBF24', STQ: '#F59E0B', SCB: '#F59E0B', MDB: '#D97706', L1D: '#B45309',
+    BISQ: '#60A5FA', BCTRL: '#3B82F6', TMU: '#818CF8', TMA: '#6366F1', CUBE: '#4F46E5', VEC: '#4338CA', TAU: '#3730A3',
+    BROB: '#F97316', ROB: '#FB923C', CMT: '#16A34A', FLS: '#EF4444', XCHK: '#DC2626',
+  },
+  classic: {
+    F0: '#6EC6FF', F1: '#6EC6FF', F2: '#6EC6FF', F3: '#6EC6FF', F4: '#6EC6FF', IB: '#53B7FF',
+    D1: '#B39DDB', D2: '#B39DDB', D3: '#B39DDB', IQ: '#9575CD', S1: '#9575CD', S2: '#9575CD',
+    P1: '#80CBC4', I1: '#80CBC4', I2: '#80CBC4', E1: '#4DB6AC', E2: '#4DB6AC', E3: '#4DB6AC', E4: '#4DB6AC',
+    W1: '#81C784', W2: '#81C784',
+    LIQ: '#FFD54F', LHQ: '#FFD54F', STQ: '#FFCA28', SCB: '#FFB300', MDB: '#FFA000', L1D: '#FF8F00',
+    BISQ: '#90CAF9', BCTRL: '#64B5F6', TMU: '#7986CB', TMA: '#5C6BC0', CUBE: '#3F51B5', VEC: '#3949AB', TAU: '#303F9F',
+    BROB: '#FF8A65', ROB: '#FF7043', CMT: '#66BB6A', FLS: '#E53935', XCHK: '#C62828',
+  },
+  high_contrast: {
+    F0: '#00E5FF', F1: '#00E5FF', F2: '#00E5FF', F3: '#00E5FF', F4: '#00E5FF', IB: '#00B8D4',
+    D1: '#D500F9', D2: '#D500F9', D3: '#D500F9', IQ: '#AA00FF', S1: '#AA00FF', S2: '#AA00FF',
+    P1: '#00E676', I1: '#00E676', I2: '#00E676', E1: '#00C853', E2: '#00C853', E3: '#00C853', E4: '#00C853',
+    W1: '#64DD17', W2: '#64DD17',
+    LIQ: '#FFD600', LHQ: '#FFD600', STQ: '#FFAB00', SCB: '#FF9100', MDB: '#FF6D00', L1D: '#FF3D00',
+    BISQ: '#40C4FF', BCTRL: '#2979FF', TMU: '#7C4DFF', TMA: '#651FFF', CUBE: '#6200EA', VEC: '#4527A0', TAU: '#311B92',
+    BROB: '#FF6E40', ROB: '#FF3D00', CMT: '#00E676', FLS: '#FF1744', XCHK: '#D50000',
+  },
+};
+
+export function resolveStageColors(metaStageColors: Record<string, string>, palette: StagePalette): Record<string, string> {
+  // Deterministic precedence: trace metadata overrides selected palette.
+  return { ...palette, ...(metaStageColors || {}) };
+}
 
 export function clamp(v: number, lo: number, hi: number): number {
   if (v < lo) return lo;
@@ -176,4 +214,3 @@ export function tokenizeLabel(label: string, rowKind: string, theme: ThemeSpec):
   }
   return parts.length > 0 ? parts : [{ text: src, color: theme.syntax.default }];
 }
-
